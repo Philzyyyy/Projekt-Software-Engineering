@@ -15,19 +15,21 @@ export default function Room() {
   const [chatInput, setChatInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null);
+  const [myPid, setMyPid] = useState(
+    typeof window !== "undefined"
+      ? localStorage.getItem("participant_row_id")
+      : null
+  );
+  const [onlineClientIds, setOnlineClientIds] = useState(new Set()); // Presence (Option A)
   const scrollRef = useRef(null);
 
   const inviteUrl = useMemo(
     () => `${window.location.origin}/room/${code}`,
     [code]
   );
-  const myRowId =
-    typeof window !== "undefined"
-      ? localStorage.getItem("participant_row_id")
-      : null;
+
+  // Wir starten das Spiel, wenn in der DB 2 aktive Teilnehmer sind.
   const canStart = participants.length >= 2;
-  const roomIsFullAndImNotIn =
-    participants.length >= 2 && !participants.some((p) => p.id === myRowId);
 
   // ---------- Helpers ----------
   const ensureClientId = () => {
@@ -51,8 +53,7 @@ export default function Room() {
   };
 
   const myDisplayName = () => {
-    const meRowId = localStorage.getItem("participant_row_id");
-    return participants.find((p) => p.id === meRowId)?.name ?? "Ich";
+    return participants.find((p) => p.id === myPid)?.name ?? "Ich";
   };
 
   const sendChat = () => {
@@ -123,9 +124,10 @@ export default function Room() {
             .select("id", { count: "exact", head: true });
 
           if (!upErr1 && c1 === 1) {
+            if (!cancelled) setMyPid(storedRowId);
             const { data: fresh } = await supabase
               .from("participants")
-              .select("id, name, joined_at")
+              .select("id, client_id, name, joined_at")
               .eq("room_id", roomId)
               .eq("active", true)
               .order("joined_at", { ascending: true });
@@ -151,9 +153,10 @@ export default function Room() {
 
           if (!upErr2) {
             localStorage.setItem("participant_row_id", existing.id);
+            if (!cancelled) setMyPid(existing.id);
             const { data: fresh } = await supabase
               .from("participants")
-              .select("id, name, joined_at")
+              .select("id, client_id, name, joined_at")
               .eq("room_id", roomId)
               .eq("active", true)
               .order("joined_at", { ascending: true });
@@ -192,9 +195,10 @@ export default function Room() {
 
         if (!cancelled && upserted?.id) {
           localStorage.setItem("participant_row_id", upserted.id);
+          setMyPid(upserted.id);
           const { data: fresh } = await supabase
             .from("participants")
-            .select("id, name, joined_at")
+            .select("id, client_id, name, joined_at")
             .eq("room_id", roomId)
             .eq("active", true)
             .order("joined_at", { ascending: true });
@@ -220,7 +224,7 @@ export default function Room() {
     async function loadParticipants() {
       const { data, error } = await supabase
         .from("participants")
-        .select("id, name, joined_at")
+        .select("id, client_id, name, joined_at")
         .eq("room_id", roomId)
         .eq("active", true)
         .order("joined_at", { ascending: true });
@@ -258,6 +262,7 @@ export default function Room() {
                   ...prev,
                   {
                     id: newRow.id,
+                    client_id: newRow.client_id,
                     name: newRow.name,
                     joined_at: newRow.joined_at,
                   },
@@ -275,6 +280,7 @@ export default function Room() {
                     ...prev,
                     {
                       id: newRow.id,
+                      client_id: newRow.client_id,
                       name: newRow.name,
                       joined_at: newRow.joined_at,
                     },
@@ -282,7 +288,9 @@ export default function Room() {
                 }
               }
               return prev.map((p) =>
-                p.id === newRow.id ? { ...p, name: newRow.name } : p
+                p.id === newRow.id
+                  ? { ...p, client_id: newRow.client_id, name: newRow.name }
+                  : p
               );
             }
             return prev;
@@ -304,7 +312,7 @@ export default function Room() {
     async function refresh() {
       const { data } = await supabase
         .from("participants")
-        .select("id, name, joined_at")
+        .select("id, client_id, name, joined_at")
         .eq("room_id", roomId)
         .eq("active", true)
         .order("joined_at", { ascending: true });
@@ -318,18 +326,48 @@ export default function Room() {
     };
   }, [roomId]);
 
-  // ---------- 3c) Heartbeat: hält last_seen frisch & active=true ----------
+  // ---------- 3c) Presence (Option A): sofortige Online/Offline-Anzeige ohne DB-Writes ----------
   useEffect(() => {
     if (!roomId) return;
-    const pid = localStorage.getItem("participant_row_id");
-    if (!pid) return;
+
+    const clientId = ensureClientId();
+
+    const presenceCh = supabase.channel(`presence-room-${roomId}`, {
+      config: { presence: { key: clientId } },
+    });
+
+    presenceCh
+      .on("presence", { event: "sync" }, () => {
+        const state = presenceCh.presenceState(); // { clientId: [{...}], ...}
+        const keys = Object.keys(state);
+        setOnlineClientIds(new Set(keys));
+      })
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          presenceCh.track({
+            client_id: clientId,
+            room_id: roomId,
+            pid: myPid,
+            t: Date.now(),
+          });
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(presenceCh);
+    };
+  }, [roomId, myPid]);
+
+  // ---------- 3d) Heartbeat: hält last_seen & active=true (HB 10s), startet erst mit myPid ----------
+  useEffect(() => {
+    if (!roomId || !myPid) return;
 
     const beat = async () => {
       try {
         await supabase
           .from("participants")
           .update({ last_seen: new Date().toISOString(), active: true })
-          .eq("id", pid)
+          .eq("id", myPid)
           .eq("room_id", roomId);
       } catch {
         /* best-effort */
@@ -337,10 +375,17 @@ export default function Room() {
     };
 
     beat(); // sofort
-    const t = setInterval(beat, 15000); // alle 15s
+    const t = setInterval(beat, 10000); // alle 10s
+    const onVis = () => {
+      if (document.visibilityState === "visible") beat();
+    };
+    document.addEventListener("visibilitychange", onVis);
 
-    return () => clearInterval(t);
-  }, [roomId]);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [roomId, myPid]);
 
   // ---------- 4) Verlassen: Soft Leave (active=false) bei Close/Route-Leave ----------
   useEffect(() => {
@@ -401,6 +446,11 @@ export default function Room() {
     );
   }
 
+  const onlineCount = participants.reduce(
+    (acc, p) => acc + (onlineClientIds.has(p.client_id) ? 1 : 0),
+    0
+  );
+
   return (
     <div className="min-h-dvh p-4">
       <div className="mx-auto grid w-full max-w-5xl grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -420,10 +470,18 @@ export default function Room() {
               </div>
             </div>
             <div className="text-sm text-slate-700">
-              Teilnehmer:{" "}
+              Teilnehmer (aktiv):{" "}
               <span className="font-semibold">{participants.length}</span>
+              <span className="ml-3 text-slate-500">online: {onlineCount}</span>
             </div>
           </div>
+
+          {/* Hinweis, wenn Partner offline (Presence) */}
+          {participants.length >= 1 && onlineCount < 2 && (
+            <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+              Warten auf zweiten Spieler...
+            </div>
+          )}
 
           {/* Invite */}
           <div className="mt-5">
@@ -450,20 +508,21 @@ export default function Room() {
             {dbError && (
               <div className="mt-2 text-sm text-red-600">DB: {dbError}</div>
             )}
-            {roomIsFullAndImNotIn && (
-              <div className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-                Der Raum ist voll.{" "}
-                <button
-                  className="underline"
-                  onClick={() => navigate("/", { replace: true })}
-                >
-                  Zur Lobby
-                </button>
-              </div>
-            )}
+            {participants.length >= 2 &&
+              !participants.some((p) => p.id === myPid) && (
+                <div className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  Der Raum ist voll.{" "}
+                  <button
+                    className="underline"
+                    onClick={() => navigate("/", { replace: true })}
+                  >
+                    Zur Lobby
+                  </button>
+                </div>
+              )}
           </div>
 
-          {/* Teilnehmerliste */}
+          {/* Teilnehmerliste mit Presence-Status */}
           <div className="mt-5 rounded-xl border border-slate-200 p-4">
             <div className="text-sm text-slate-500 mb-2">Teilnehmer</div>
             <div className="flex flex-wrap items-center gap-2">
@@ -472,19 +531,36 @@ export default function Room() {
                   Noch niemand im Raum …
                 </span>
               ) : (
-                participants.map((p) => (
-                  <span
-                    key={p.id}
-                    className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-800"
-                  >
-                    {p.name}
-                  </span>
-                ))
+                participants.map((p) => {
+                  const online = onlineClientIds.has(p.client_id);
+                  return (
+                    <span
+                      key={p.id}
+                      className={[
+                        "inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs",
+                        online
+                          ? "bg-green-100 text-green-800"
+                          : "bg-slate-100 text-slate-700",
+                      ].join(" ")}
+                    >
+                      <span
+                        className={[
+                          "h-2 w-2 rounded-full",
+                          online ? "bg-green-500" : "bg-slate-400",
+                        ].join(" ")}
+                      />
+                      {p.name}
+                      {p.id === myPid && (
+                        <span className="opacity-60">(Ich)</span>
+                      )}
+                    </span>
+                  );
+                })
               )}
             </div>
           </div>
 
-          {/* CTA: Spiel starten – ohne Spielansicht */}
+          {/* CTA: Spiel starten – weiterhin über DB-Status (2 aktive) */}
           <div className="mt-6 flex items-center gap-3">
             <button
               type="button"
@@ -505,10 +581,8 @@ export default function Room() {
 
           {/* Workflow-Info */}
           <div className="mt-6 rounded-xl bg-slate-50 p-4 text-sm leading-relaxed text-slate-600">
-            <span className="font-medium">Workflow:</span> Diskutiert im Chat
-            und stimmt euch ab. Sobald ihr zu zweit seid, könnt ihr{" "}
-            <span className="font-semibold">„Spiel starten“</span> klicken. Die
-            eigentliche Spiel-/Fragenansicht ist hier bewusst nicht enthalten.
+            <span className="font-medium">Anleitung:</span> Das Spiel kann
+            gestartet werden, sobald zwei Spieler der Lobby beigetreten sind.
           </div>
 
           {/* Back link */}
