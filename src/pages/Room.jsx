@@ -102,7 +102,7 @@ export default function Room() {
     };
   }, [code]);
 
-  // ---------- 2) Betreten: upsert (active=true) auf (room_id, client_id) ----------
+  // ---------- 2) Betreten/Rejoin: bestehende Zeile reaktivieren (active=true) ----------
   useEffect(() => {
     if (!roomId) return;
     let cancelled = false;
@@ -112,7 +112,58 @@ export default function Room() {
         const clientId = ensureClientId();
         const defaultName = `Spieler ${Math.floor(Math.random() * 900 + 100)}`;
 
-        const { data, error } = await supabase
+        // 2.1 Reaktivieren per gespeicherter Row-ID
+        const storedRowId = localStorage.getItem("participant_row_id");
+        if (storedRowId) {
+          const { error: upErr1, count: c1 } = await supabase
+            .from("participants")
+            .update({ active: true }) // Name beibehalten
+            .eq("id", storedRowId)
+            .eq("room_id", roomId)
+            .select("id", { count: "exact", head: true });
+
+          if (!upErr1 && c1 === 1) {
+            const { data: fresh } = await supabase
+              .from("participants")
+              .select("id, name, joined_at")
+              .eq("room_id", roomId)
+              .eq("active", true)
+              .order("joined_at", { ascending: true });
+            if (!cancelled && fresh) setParticipants(fresh);
+            return;
+          }
+        }
+
+        // 2.2 Prüfen, ob (room_id, client_id) existiert
+        const { data: existing, error: selErr } = await supabase
+          .from("participants")
+          .select("id, name")
+          .eq("room_id", roomId)
+          .eq("client_id", clientId)
+          .maybeSingle();
+
+        if (!selErr && existing?.id) {
+          const { error: upErr2 } = await supabase
+            .from("participants")
+            .update({ active: true })
+            .eq("id", existing.id)
+            .eq("room_id", roomId);
+
+          if (!upErr2) {
+            localStorage.setItem("participant_row_id", existing.id);
+            const { data: fresh } = await supabase
+              .from("participants")
+              .select("id, name, joined_at")
+              .eq("room_id", roomId)
+              .eq("active", true)
+              .order("joined_at", { ascending: true });
+            if (!cancelled && fresh) setParticipants(fresh);
+            return;
+          }
+        }
+
+        // 2.3 Kein bestehender Datensatz -> normaler Join via UPSERT
+        const { data: upserted, error } = await supabase
           .from("participants")
           .upsert(
             [
@@ -125,7 +176,7 @@ export default function Room() {
             ],
             { onConflict: "room_id,client_id" }
           )
-          .select("id, name, active")
+          .select("id, name")
           .single();
 
         if (error) {
@@ -139,22 +190,19 @@ export default function Room() {
           return;
         }
 
-        if (!cancelled && data?.id) {
-          localStorage.setItem("participant_row_id", data.id);
-
-          // Einmaliges Refresh (Race-Fix)
-          const { data: fresh, error: freshErr } = await supabase
+        if (!cancelled && upserted?.id) {
+          localStorage.setItem("participant_row_id", upserted.id);
+          const { data: fresh } = await supabase
             .from("participants")
             .select("id, name, joined_at")
             .eq("room_id", roomId)
             .eq("active", true)
             .order("joined_at", { ascending: true });
-
-          if (!cancelled && !freshErr && fresh) setParticipants(fresh);
+          if (!cancelled && fresh) setParticipants(fresh);
         }
       } catch (e) {
         console.error(e);
-        setDbError("Fehler beim Anlegen des Teilnehmers.");
+        setDbError("Fehler beim Beitritt/Rejoin.");
       }
     })();
 
@@ -202,7 +250,6 @@ export default function Room() {
             const { eventType, new: newRow, old: oldRow } = payload;
 
             if (eventType === "INSERT") {
-              // Nur aktive anzeigen
               if (
                 newRow.active === true &&
                 !prev.some((p) => p.id === newRow.id)
@@ -217,14 +264,11 @@ export default function Room() {
                 ];
               }
             } else if (eventType === "DELETE") {
-              // (wir löschen im Frontend eigentlich nicht mehr, aber falls doch)
               return prev.filter((p) => p.id !== oldRow.id);
             } else if (eventType === "UPDATE") {
-              // Wechsel von active true->false: aus der Liste entfernen
               if (oldRow.active === true && newRow.active === false) {
                 return prev.filter((p) => p.id !== newRow.id);
               }
-              // false->true: hinzufügen, wenn noch nicht drin
               if (oldRow.active === false && newRow.active === true) {
                 if (!prev.some((p) => p.id === newRow.id)) {
                   return [
@@ -237,7 +281,6 @@ export default function Room() {
                   ];
                 }
               }
-              // Name-Update o.ä.
               return prev.map((p) =>
                 p.id === newRow.id ? { ...p, name: newRow.name } : p
               );
@@ -275,7 +318,7 @@ export default function Room() {
     };
   }, [roomId]);
 
-  // ---------- 4) Verlassen: nur 'active=false' setzen (kein DELETE) ----------
+  // ---------- 4) Verlassen: nur 'active=false' (kein DELETE) ----------
   useEffect(() => {
     const softLeave = async () => {
       const pid = localStorage.getItem("participant_row_id");
@@ -286,7 +329,7 @@ export default function Room() {
             .from("participants")
             .update({ active: false })
             .eq("id", pid);
-          // Row-ID behalten: bei Reload wird wieder active=true gesetzt
+          // Row-ID absichtlich behalten -> Rejoin setzt active wieder true
         } else if (roomId && clientId) {
           await supabase
             .from("participants")
