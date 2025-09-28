@@ -102,7 +102,7 @@ export default function Room() {
     };
   }, [code]);
 
-  // ---------- 2) Betreten/Rejoin: bestehende Zeile reaktivieren (active=true) ----------
+  // ---------- 2) Betreten/Rejoin: bestehende Zeile reaktivieren (active=true), sonst upsert ----------
   useEffect(() => {
     if (!roomId) return;
     let cancelled = false;
@@ -117,7 +117,7 @@ export default function Room() {
         if (storedRowId) {
           const { error: upErr1, count: c1 } = await supabase
             .from("participants")
-            .update({ active: true }) // Name beibehalten
+            .update({ active: true })
             .eq("id", storedRowId)
             .eq("room_id", roomId)
             .select("id", { count: "exact", head: true });
@@ -318,7 +318,31 @@ export default function Room() {
     };
   }, [roomId]);
 
-  // ---------- 4) Verlassen: nur 'active=false' (kein DELETE) ----------
+  // ---------- 3c) Heartbeat: hält last_seen frisch & active=true ----------
+  useEffect(() => {
+    if (!roomId) return;
+    const pid = localStorage.getItem("participant_row_id");
+    if (!pid) return;
+
+    const beat = async () => {
+      try {
+        await supabase
+          .from("participants")
+          .update({ last_seen: new Date().toISOString(), active: true })
+          .eq("id", pid)
+          .eq("room_id", roomId);
+      } catch {
+        /* best-effort */
+      }
+    };
+
+    beat(); // sofort
+    const t = setInterval(beat, 15000); // alle 15s
+
+    return () => clearInterval(t);
+  }, [roomId]);
+
+  // ---------- 4) Verlassen: Soft Leave (active=false) bei Close/Route-Leave ----------
   useEffect(() => {
     const softLeave = async () => {
       const pid = localStorage.getItem("participant_row_id");
@@ -329,7 +353,6 @@ export default function Room() {
             .from("participants")
             .update({ active: false })
             .eq("id", pid);
-          // Row-ID absichtlich behalten -> Rejoin setzt active wieder true
         } else if (roomId && clientId) {
           await supabase
             .from("participants")
@@ -337,7 +360,7 @@ export default function Room() {
             .match({ room_id: roomId, client_id: clientId });
         }
       } catch {
-        // best-effort
+        /* best-effort */
       }
     };
 
