@@ -102,7 +102,7 @@ export default function Room() {
     };
   }, [code]);
 
-  // ---------- 2) Mich als Participant anlegen (Upsert auf room_id+client_id) ----------
+  // ---------- 2) Betreten: upsert (active=true) auf (room_id, client_id) ----------
   useEffect(() => {
     if (!roomId) return;
     let cancelled = false;
@@ -115,15 +115,21 @@ export default function Room() {
         const { data, error } = await supabase
           .from("participants")
           .upsert(
-            [{ room_id: roomId, client_id: clientId, name: defaultName }],
+            [
+              {
+                room_id: roomId,
+                client_id: clientId,
+                name: defaultName,
+                active: true,
+              },
+            ],
             { onConflict: "room_id,client_id" }
           )
-          .select("id, name")
+          .select("id, name, active")
           .single();
 
         if (error) {
           console.error("participants upsert error", error);
-          // Raum voll -> höfliche Meldung und zurück zur Lobby
           if (error.message?.includes("ROOM_FULL")) {
             alert("Dieser Raum ist bereits voll (max. 2).");
             navigate("/", { replace: true });
@@ -136,11 +142,12 @@ export default function Room() {
         if (!cancelled && data?.id) {
           localStorage.setItem("participant_row_id", data.id);
 
-          // Einmaliges Refresh: falls das INSERT-Event race-bedingt verpasst wurde
+          // Einmaliges Refresh (Race-Fix)
           const { data: fresh, error: freshErr } = await supabase
             .from("participants")
             .select("id, name, joined_at")
             .eq("room_id", roomId)
+            .eq("active", true)
             .order("joined_at", { ascending: true });
 
           if (!cancelled && !freshErr && fresh) setParticipants(fresh);
@@ -156,7 +163,7 @@ export default function Room() {
     };
   }, [roomId, navigate]);
 
-  // ---------- 3) Teilnehmer initial laden + Realtime abonnieren ----------
+  // ---------- 3) Teilnehmer initial laden + Realtime abonnieren (nur active=true) ----------
   useEffect(() => {
     if (!roomId) return;
 
@@ -167,6 +174,7 @@ export default function Room() {
         .from("participants")
         .select("id, name, joined_at")
         .eq("room_id", roomId)
+        .eq("active", true)
         .order("joined_at", { ascending: true });
 
       if (error) {
@@ -192,8 +200,13 @@ export default function Room() {
         (payload) => {
           setParticipants((prev) => {
             const { eventType, new: newRow, old: oldRow } = payload;
+
             if (eventType === "INSERT") {
-              if (!prev.some((p) => p.id === newRow.id)) {
+              // Nur aktive anzeigen
+              if (
+                newRow.active === true &&
+                !prev.some((p) => p.id === newRow.id)
+              ) {
                 return [
                   ...prev,
                   {
@@ -204,8 +217,27 @@ export default function Room() {
                 ];
               }
             } else if (eventType === "DELETE") {
+              // (wir löschen im Frontend eigentlich nicht mehr, aber falls doch)
               return prev.filter((p) => p.id !== oldRow.id);
             } else if (eventType === "UPDATE") {
+              // Wechsel von active true->false: aus der Liste entfernen
+              if (oldRow.active === true && newRow.active === false) {
+                return prev.filter((p) => p.id !== newRow.id);
+              }
+              // false->true: hinzufügen, wenn noch nicht drin
+              if (oldRow.active === false && newRow.active === true) {
+                if (!prev.some((p) => p.id === newRow.id)) {
+                  return [
+                    ...prev,
+                    {
+                      id: newRow.id,
+                      name: newRow.name,
+                      joined_at: newRow.joined_at,
+                    },
+                  ];
+                }
+              }
+              // Name-Update o.ä.
               return prev.map((p) =>
                 p.id === newRow.id ? { ...p, name: newRow.name } : p
               );
@@ -221,7 +253,7 @@ export default function Room() {
     };
   }, [roomId]);
 
-  // ---------- 3b) Fallback: alle 8s neu laden (falls Realtime-Event verpasst wird) ----------
+  // ---------- 3b) Fallback: alle 8s neu laden ----------
   useEffect(() => {
     if (!roomId) return;
     let stopped = false;
@@ -231,6 +263,7 @@ export default function Room() {
         .from("participants")
         .select("id, name, joined_at")
         .eq("room_id", roomId)
+        .eq("active", true)
         .order("joined_at", { ascending: true });
       if (!stopped && data) setParticipants(data);
     }
@@ -242,19 +275,22 @@ export default function Room() {
     };
   }, [roomId]);
 
-  // ---------- 4) Beim Schließen/Unmount: eigenen Participant löschen (nur Close & Route-Leave) ----------
+  // ---------- 4) Verlassen: nur 'active=false' setzen (kein DELETE) ----------
   useEffect(() => {
-    const leave = async () => {
+    const softLeave = async () => {
       const pid = localStorage.getItem("participant_row_id");
       const clientId = localStorage.getItem("participant_client_id");
       try {
         if (pid) {
-          await supabase.from("participants").delete().eq("id", pid);
-          localStorage.removeItem("participant_row_id");
+          await supabase
+            .from("participants")
+            .update({ active: false })
+            .eq("id", pid);
+          // Row-ID behalten: bei Reload wird wieder active=true gesetzt
         } else if (roomId && clientId) {
           await supabase
             .from("participants")
-            .delete()
+            .update({ active: false })
             .match({ room_id: roomId, client_id: clientId });
         }
       } catch {
@@ -262,15 +298,13 @@ export default function Room() {
       }
     };
 
-    // Nur bei Tab/Window schließen oder echtem Seitenwechsel
-    window.addEventListener("beforeunload", leave);
-    window.addEventListener("pagehide", leave);
+    window.addEventListener("beforeunload", softLeave);
+    window.addEventListener("pagehide", softLeave);
 
-    // Beim Verlassen der Room-Route (Komponente unmountet) auch aufräumen
     return () => {
-      window.removeEventListener("beforeunload", leave);
-      window.removeEventListener("pagehide", leave);
-      leave();
+      window.removeEventListener("beforeunload", softLeave);
+      window.removeEventListener("pagehide", softLeave);
+      softLeave();
     };
   }, [roomId]);
 
