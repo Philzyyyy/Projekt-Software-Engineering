@@ -1,10 +1,11 @@
 // src/pages/Room.jsx
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import supabase from "../lib/supabaseClient";
 
 export default function Room() {
   const { code } = useParams();
+  const navigate = useNavigate();
 
   // ----- State -----
   const [copied, setCopied] = useState(false);
@@ -20,7 +21,13 @@ export default function Room() {
     () => `${window.location.origin}/room/${code}`,
     [code]
   );
+  const myRowId =
+    typeof window !== "undefined"
+      ? localStorage.getItem("participant_row_id")
+      : null;
   const canStart = participants.length >= 2;
+  const roomIsFullAndImNotIn =
+    participants.length >= 2 && !participants.some((p) => p.id === myRowId);
 
   // ---------- Helpers ----------
   const ensureClientId = () => {
@@ -116,11 +123,27 @@ export default function Room() {
 
         if (error) {
           console.error("participants upsert error", error);
+          // Raum voll -> höfliche Meldung und zurück zur Lobby
+          if (error.message?.includes("ROOM_FULL")) {
+            alert("Dieser Raum ist bereits voll (max. 2).");
+            navigate("/", { replace: true });
+            return;
+          }
           setDbError(error.message);
           return;
         }
+
         if (!cancelled && data?.id) {
           localStorage.setItem("participant_row_id", data.id);
+
+          // Einmaliges Refresh: falls das INSERT-Event race-bedingt verpasst wurde
+          const { data: fresh, error: freshErr } = await supabase
+            .from("participants")
+            .select("id, name, joined_at")
+            .eq("room_id", roomId)
+            .order("joined_at", { ascending: true });
+
+          if (!cancelled && !freshErr && fresh) setParticipants(fresh);
         }
       } catch (e) {
         console.error(e);
@@ -131,7 +154,7 @@ export default function Room() {
     return () => {
       cancelled = true;
     };
-  }, [roomId]);
+  }, [roomId, navigate]);
 
   // ---------- 3) Teilnehmer initial laden + Realtime abonnieren ----------
   useEffect(() => {
@@ -169,7 +192,6 @@ export default function Room() {
         (payload) => {
           setParticipants((prev) => {
             const { eventType, new: newRow, old: oldRow } = payload;
-
             if (eventType === "INSERT") {
               if (!prev.some((p) => p.id === newRow.id)) {
                 return [
@@ -199,24 +221,58 @@ export default function Room() {
     };
   }, [roomId]);
 
-  // ---------- 4) Beim Schließen/Unmount: eigenen Participant löschen ----------
+  // ---------- 3b) Fallback: alle 8s neu laden (falls Realtime-Event verpasst wird) ----------
   useEffect(() => {
-    const leave = () => {
+    if (!roomId) return;
+    let stopped = false;
+
+    async function refresh() {
+      const { data } = await supabase
+        .from("participants")
+        .select("id, name, joined_at")
+        .eq("room_id", roomId)
+        .order("joined_at", { ascending: true });
+      if (!stopped && data) setParticipants(data);
+    }
+
+    const t = setInterval(refresh, 8000);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+  }, [roomId]);
+
+  // ---------- 4) Beim Schließen/Unmount: eigenen Participant löschen (nur Close & Route-Leave) ----------
+  useEffect(() => {
+    const leave = async () => {
       const pid = localStorage.getItem("participant_row_id");
-      if (pid) {
-        // Fire-and-forget – in SPAs kann der Request abgebrochen werden, für Prototyp ok.
-        supabase.from("participants").delete().eq("id", pid);
-        localStorage.removeItem("participant_row_id");
+      const clientId = localStorage.getItem("participant_client_id");
+      try {
+        if (pid) {
+          await supabase.from("participants").delete().eq("id", pid);
+          localStorage.removeItem("participant_row_id");
+        } else if (roomId && clientId) {
+          await supabase
+            .from("participants")
+            .delete()
+            .match({ room_id: roomId, client_id: clientId });
+        }
+      } catch {
+        // best-effort
       }
     };
-    // a) Browser/Tab schließen oder neu laden
+
+    // Nur bei Tab/Window schließen oder echtem Seitenwechsel
     window.addEventListener("beforeunload", leave);
-    // b) Komponente unmountet (z.B. Routewechsel)
+    window.addEventListener("pagehide", leave);
+
+    // Beim Verlassen der Room-Route (Komponente unmountet) auch aufräumen
     return () => {
       window.removeEventListener("beforeunload", leave);
+      window.removeEventListener("pagehide", leave);
       leave();
     };
-  }, []);
+  }, [roomId]);
 
   // ---------- UI ----------
   if (loading) {
@@ -293,6 +349,17 @@ export default function Room() {
             )}
             {dbError && (
               <div className="mt-2 text-sm text-red-600">DB: {dbError}</div>
+            )}
+            {roomIsFullAndImNotIn && (
+              <div className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                Der Raum ist voll.{" "}
+                <button
+                  className="underline"
+                  onClick={() => navigate("/", { replace: true })}
+                >
+                  Zur Lobby
+                </button>
+              </div>
             )}
           </div>
 
