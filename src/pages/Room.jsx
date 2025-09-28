@@ -470,7 +470,7 @@ export default function Room() {
               </div>
             </div>
             <div className="text-sm text-slate-700">
-              Teilnehmer (aktiv):{" "}
+              Teilnehmer im Raum:{" "}
               <span className="font-semibold">{participants.length}</span>
               <span className="ml-3 text-slate-500">online: {onlineCount}</span>
             </div>
