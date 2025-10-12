@@ -1,5 +1,5 @@
 // src/game/useRealtimeConsensus.js
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import supabase from "../lib/supabaseClient";
 
 function getClientId() {
@@ -13,9 +13,15 @@ function getClientId() {
 }
 
 /**
- * Realtime-Konsens für Quiz:
- * broadcastet & empfängt: 'pick', 'reveal', 'next', 'finish'
- * - reveal sendet zusätzlich questionIndex
+ * Realtime-Konsens:
+ * Events:
+ *  - pick   {questionIndex, optionIndex}
+ *  - reveal {questionIndex, optionIndex?}
+ *  - next   {toIndex, isLast}
+ *  - finish {}
+ *  - state  {index, phase}
+ *
+ * Sendet erst nach SUBSCRIBED; bis dahin Outbox-Puffer.
  */
 export default function useRealtimeConsensus({
   roomId,
@@ -23,9 +29,23 @@ export default function useRealtimeConsensus({
   onReveal,
   onNext,
   onFinish,
+  onState, // Snapshot
 }) {
   const clientId = useMemo(() => getClientId(), []);
   const channelRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const outboxRef = useRef([]);
+
+  const enqueueOrSend = (event, payload) => {
+    const msg = {
+      type: "broadcast",
+      event,
+      payload: { ...payload, by: clientId, at: Date.now() },
+    };
+    const ch = channelRef.current;
+    if (ready && ch) ch.send(msg);
+    else outboxRef.current.push(msg);
+  };
 
   useEffect(() => {
     if (!roomId) return;
@@ -39,57 +59,53 @@ export default function useRealtimeConsensus({
       })
       .on("broadcast", { event: "reveal" }, (msg) => {
         if (msg?.payload?.by === clientId) return;
-        const { questionIndex } = msg.payload || {};
-        onReveal?.({ questionIndex, from: "remote" });
+        const { questionIndex, optionIndex } = msg.payload || {};
+        onReveal?.({ questionIndex, optionIndex, from: "remote" });
       })
       .on("broadcast", { event: "next" }, (msg) => {
         if (msg?.payload?.by === clientId) return;
-        onNext?.({ from: "remote" });
+        const { toIndex, isLast } = msg.payload || {};
+        onNext?.({ toIndex, isLast, from: "remote" });
       })
       .on("broadcast", { event: "finish" }, (msg) => {
         if (msg?.payload?.by === clientId) return;
         onFinish?.({ from: "remote" });
       })
-      .subscribe();
+      .on("broadcast", { event: "state" }, (msg) => {
+        if (msg?.payload?.by === clientId) return;
+        const { index, phase } = msg.payload || {};
+        if (typeof index === "number" && typeof phase === "string") {
+          onState?.({ index, phase, from: "remote" });
+        }
+      })
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          setReady(true);
+          while (outboxRef.current.length) ch.send(outboxRef.current.shift());
+        }
+      });
 
     channelRef.current = ch;
+    setReady(false);
+    outboxRef.current = [];
+
     return () => {
       if (ch) supabase.removeChannel(ch);
       channelRef.current = null;
+      setReady(false);
+      outboxRef.current = [];
     };
-  }, [roomId, clientId, onPick, onReveal, onNext, onFinish]);
+  }, [roomId, clientId, onPick, onReveal, onNext, onFinish, onState]);
 
-  const sendPick = (questionIndex, optionIndex) => {
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "pick",
-      payload: { by: clientId, questionIndex, optionIndex, at: Date.now() },
-    });
-  };
+  // Public Sender
+  const sendPick = (questionIndex, optionIndex) =>
+    enqueueOrSend("pick", { questionIndex, optionIndex });
+  const sendReveal = (questionIndex, optionIndex) =>
+    enqueueOrSend("reveal", { questionIndex, optionIndex });
+  const sendNext = (toIndex, isLast) =>
+    enqueueOrSend("next", { toIndex, isLast });
+  const sendFinish = () => enqueueOrSend("finish", {});
+  const sendState = (index, phase) => enqueueOrSend("state", { index, phase });
 
-  const sendReveal = (questionIndex) => {
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "reveal",
-      payload: { by: clientId, questionIndex, at: Date.now() },
-    });
-  };
-
-  const sendNext = () => {
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "next",
-      payload: { by: clientId, at: Date.now() },
-    });
-  };
-
-  const sendFinish = () => {
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "finish",
-      payload: { by: clientId, at: Date.now() },
-    });
-  };
-
-  return { sendPick, sendReveal, sendNext, sendFinish };
+  return { sendPick, sendReveal, sendNext, sendFinish, sendState, ready };
 }

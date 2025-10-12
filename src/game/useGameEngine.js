@@ -19,16 +19,22 @@ function reducer(state, action) {
         score: 0,
       };
 
+    // SELECT auch in REVEALED erlauben, wenn noch keine Auswahl existiert
     case "SELECT": {
-      if (state.phase !== PHASES.ANSWERING) return state;
+      const curIdx = state.index;
+      const alreadyPicked = state.answers[curIdx] != null;
+      const canApply =
+        state.phase === PHASES.ANSWERING ||
+        (state.phase === PHASES.REVEALED && !alreadyPicked);
+      if (!canApply) return state;
       return {
         ...state,
-        answers: { ...state.answers, [state.index]: action.optionIndex },
+        answers: { ...state.answers, [curIdx]: action.optionIndex },
       };
     }
 
+    // Punkte genau einmal beim Übergang ANSWERING -> REVEALED
     case "REVEAL": {
-      // Idempotent: erneutes REVEAL ändert nichts
       if (state.phase === PHASES.REVEALED || state.phase === PHASES.FINISHED) {
         return state;
       }
@@ -46,9 +52,26 @@ function reducer(state, action) {
       return { ...state, index: nextIndex, phase: PHASES.ANSWERING };
     }
 
-    // Harte Umschaltung auf FINISHED (für Remote-Failsafe)
     case "FINISH":
       return { ...state, phase: PHASES.FINISHED };
+
+    // 👇 Direkte Synchronisation auf (index, phase) — OHNE Score-Änderung
+    case "SYNC_INDEX_PHASE": {
+      const { index, phase } = action;
+      const safeIndex = Math.max(
+        0,
+        Math.min(index ?? state.index, (state.questions?.length ?? 1) - 1)
+      );
+      let safePhase = phase ?? state.phase;
+      if (
+        safePhase !== PHASES.ANSWERING &&
+        safePhase !== PHASES.REVEALED &&
+        safePhase !== PHASES.FINISHED
+      ) {
+        safePhase = PHASES.ANSWERING;
+      }
+      return { ...state, index: safeIndex, phase: safePhase };
+    }
 
     default:
       return state;
@@ -75,6 +98,10 @@ export default function useGameEngine() {
   const reveal = useCallback(() => dispatch({ type: "REVEAL" }), []);
   const next = useCallback(() => dispatch({ type: "NEXT" }), []);
   const finish = useCallback(() => dispatch({ type: "FINISH" }), []);
+  const syncIndexPhase = useCallback(
+    (index, phase) => dispatch({ type: "SYNC_INDEX_PHASE", index, phase }),
+    []
+  );
 
   const current = useMemo(
     () => state.questions[state.index] ?? null,
@@ -90,5 +117,6 @@ export default function useGameEngine() {
     reveal,
     next,
     finish,
+    syncIndexPhase, // 👈 neu
   };
 }
