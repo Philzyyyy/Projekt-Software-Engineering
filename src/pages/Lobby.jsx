@@ -1,8 +1,7 @@
+// src/pages/Lobby.jsx
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import supabase from "../lib/supabaseClient";
-
-// <-- euer zentraler Client
 
 function genCode(len = 5) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXZ0123456789";
@@ -36,7 +35,6 @@ export default function Lobby() {
         navigate(`/room/${c}`);
         return;
       }
-      // Nur bei echter Duplicate weiterversuchen – sonst abbrechen
       const msg = String(insertErr.message || "").toLowerCase();
       if (!msg.includes("duplicate") && !msg.includes("unique")) {
         setBusy(false);
@@ -89,6 +87,7 @@ export default function Lobby() {
       <div className="w-full max-w-md bg-white rounded-2xl shadow p-6 space-y-6">
         <h1 className="text-2xl font-semibold">Quiz • Lobby</h1>
 
+        {/* CTA: Raum erstellen */}
         <button
           onClick={onCreate}
           disabled={busy}
@@ -97,6 +96,7 @@ export default function Lobby() {
           {busy ? "Erstelle…" : "Raum erstellen"}
         </button>
 
+        {/* Formular: Mit Code beitreten */}
         <form onSubmit={onSubmit} className="space-y-2">
           <label className="block text-sm font-medium">
             Mit Code beitreten
@@ -105,7 +105,7 @@ export default function Lobby() {
             <input
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase().trim())}
-              placeholder="z. B. ABC12"
+              placeholder="z. B. ABC12"
               maxLength={5}
               className="flex-1 rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               aria-invalid={!!error}
@@ -127,6 +127,22 @@ export default function Lobby() {
             {error || " "}
           </p>
         </form>
+
+        {/* Trenner */}
+        <div className="h-px bg-slate-200 my-2" />
+
+        {/* NEU: Link zum Fragen-Formular */}
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-slate-600">
+            Oder erstelle neue Fragen für den Pool:
+          </div>
+          <Link
+            to="/add-question"
+            className="inline-flex items-center rounded-xl px-3 py-2 border border-slate-300 text-slate-700 hover:bg-slate-50"
+          >
+            ➕ Fragen hinzufügen
+          </Link>
+        </div>
       </div>
     </div>
   );
