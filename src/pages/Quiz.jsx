@@ -6,6 +6,12 @@ import useGameEngine, { PHASES } from "../game/useGameEngine.js";
 import useRealtimeConsensus from "../game/useRealtimeConsensus.js";
 import supabase from "../lib/supabaseClient";
 
+const PHASE_ORDER = {
+  [PHASES.ANSWERING]: 0,
+  [PHASES.REVEALED]: 1,
+  [PHASES.FINISHED]: 2,
+};
+
 export default function Quiz(props) {
   const { state } = useLocation();
   const [loading, setLoading] = useState(true);
@@ -36,58 +42,65 @@ export default function Quiz(props) {
     syncIndexPhase,
   } = useGameEngine();
 
-  // --- Reconcile: robustes Nachziehen bei State-Snapshots ---
+  // Refs
+  const qlenRef = useRef(0);
+  useEffect(() => {
+    qlenRef.current = questions.length;
+  }, [questions.length]);
+
+  const pendingStateRef = useRef(null);
   const reconcilingRef = useRef(false);
+
+  // ---- Reconcile: Remote-States robust anwenden (nie zurückspringen)
   const reconcileState = useCallback(
     ({ index: remoteIndex, phase: remotePhase }) => {
-      if (remoteIndex == null || !questions.length) return;
-      // Verhindere Re-Entrancy
+      const total = qlenRef.current;
+      if (remoteIndex == null) return;
+      if (total === 0) {
+        pendingStateRef.current = { index: remoteIndex, phase: remotePhase };
+        return;
+      }
       if (reconcilingRef.current) return;
       reconcilingRef.current = true;
 
       try {
-        // Falls der andere weiter ist: für alle übersprungenen Fragen Punkte mitzählen
-        if (remoteIndex > index) {
-          if (phase === PHASES.ANSWERING) {
-            reveal(); // Score für aktuelle Frage sichern
-          }
-          // Direkt auf Zielindex/Phase springen (Score für Zwischenfragen kommt via vorherige Reveals vom Sender)
-          const targetPhase =
-            remotePhase === PHASES.FINISHED
-              ? PHASES.FINISHED
-              : remotePhase === PHASES.REVEALED
-              ? PHASES.REVEALED
-              : PHASES.ANSWERING;
-          syncIndexPhase(
-            Math.min(remoteIndex, questions.length - 1),
-            targetPhase
-          );
+        const clampedIndex = Math.max(0, Math.min(remoteIndex, total - 1));
+        const targetPhase =
+          remotePhase === PHASES.FINISHED
+            ? PHASES.FINISHED
+            : remotePhase === PHASES.REVEALED
+            ? PHASES.REVEALED
+            : PHASES.ANSWERING;
+
+        // nie zurück
+        if (clampedIndex < index) return;
+
+        if (clampedIndex > index) {
+          if (phase === PHASES.ANSWERING) reveal();
+          syncIndexPhase(clampedIndex, targetPhase);
           return;
         }
 
-        // Gleiches Index, aber falsche Phase -> angleichen
-        if (remoteIndex === index) {
-          if (remotePhase === PHASES.REVEALED && phase === PHASES.ANSWERING) {
+        // gleiches Index → Phase nur vorwärts
+        if (PHASE_ORDER[targetPhase] > PHASE_ORDER[phase]) {
+          if (targetPhase === PHASES.REVEALED && phase === PHASES.ANSWERING) {
             reveal();
-          } else if (
-            remotePhase === PHASES.FINISHED &&
-            phase !== PHASES.FINISHED
-          ) {
+          } else if (targetPhase === PHASES.FINISHED) {
             if (phase === PHASES.ANSWERING) reveal();
             finish();
           }
         }
       } finally {
-        // minimal delay, um state updates durchzulassen
         setTimeout(() => (reconcilingRef.current = false), 0);
       }
     },
-    [index, phase, questions.length, reveal, finish, syncIndexPhase]
+    [index, phase, reveal, finish, syncIndexPhase]
   );
 
-  // --- Remote → Engine ---
+  // --- Remote → Engine
   const onPick = useCallback(
     ({ questionIndex, optionIndex }) => {
+      if (qlenRef.current === 0) return;
       if (questionIndex === index) select(optionIndex);
     },
     [index, select]
@@ -95,6 +108,7 @@ export default function Quiz(props) {
 
   const onReveal = useCallback(
     ({ questionIndex, optionIndex }) => {
+      if (qlenRef.current === 0) return;
       if (questionIndex === index && phase === PHASES.ANSWERING) {
         if (optionIndex != null && answers[index] == null) select(optionIndex);
         reveal();
@@ -107,15 +121,25 @@ export default function Quiz(props) {
 
   const onNext = useCallback(
     ({ toIndex, isLast }) => {
-      // Sicherstellen, dass Score für lokale Frage gezählt wird
+      if (qlenRef.current === 0) {
+        pendingStateRef.current = {
+          index: toIndex,
+          phase: isLast ? PHASES.FINISHED : PHASES.ANSWERING,
+        };
+        return;
+      }
       if (phase === PHASES.ANSWERING) reveal();
-      const targetPhase = isLast ? PHASES.FINISHED : PHASES.ANSWERING;
-      syncIndexPhase(Math.min(toIndex, questions.length - 1), targetPhase);
+      const clamped = Math.max(0, Math.min(toIndex, qlenRef.current - 1));
+      syncIndexPhase(clamped, isLast ? PHASES.FINISHED : PHASES.ANSWERING);
     },
-    [phase, reveal, syncIndexPhase, questions.length]
+    [phase, reveal, syncIndexPhase]
   );
 
   const onFinish = useCallback(() => {
+    if (qlenRef.current === 0) {
+      pendingStateRef.current = { index: 0, phase: PHASES.FINISHED };
+      return;
+    }
     if (phase === PHASES.ANSWERING) reveal();
     finish();
   }, [phase, reveal, finish]);
@@ -130,8 +154,9 @@ export default function Quiz(props) {
       onState: reconcileState,
     });
 
-  // ---- Fragen laden mit deterministischem Seed (code + started_at) ----
+  // ---- Fragen laden (nur von roomId/code/load abhängig!)
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       setLoading(true);
       try {
@@ -146,14 +171,27 @@ export default function Quiz(props) {
         }
         const seed = startedAt ? `${code}|${startedAt}` : `${code}|no-start`;
         const qs = await fetchQuestions({ limit: 10, seed });
+        if (cancelled) return;
+
         load(qs);
+
+        // nach LOAD ggf. gepufferten Snapshot anwenden
+        if (pendingStateRef.current) {
+          const snap = pendingStateRef.current;
+          pendingStateRef.current = null;
+          setTimeout(() => reconcileState(snap), 0);
+        }
+        // ⚠️ kein initiales sendState(0, ANSWERING) → verhindert Zurückspringen
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  }, [load, roomId, code]);
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId, code, load]); // ⬅️ WICHTIG: KEIN reconcileState hier!
 
-  // ---- Jede Lokaländerung: aktuellen State senden (debounced via setTimeout(0)) ----
+  // ---- jede lokale Änderung → State senden
   useEffect(() => {
     if (!roomId) return;
     const t = setTimeout(() => {
@@ -192,7 +230,7 @@ export default function Quiz(props) {
   const picked = answers[index];
   const qText = current.text ?? current.question ?? current.title ?? "";
 
-  // --- Local → Remote ---
+  // --- Local → Remote
   const handleSelect = (i) => {
     if (phase !== PHASES.ANSWERING) return;
     select(i);
@@ -205,18 +243,17 @@ export default function Quiz(props) {
     if (roomId) {
       const latestPick = answers[index] ?? null;
       sendReveal(index, latestPick);
-      sendState(index, PHASES.REVEALED);
     }
   };
 
   const handleNext = () => {
     const toIndex = index + 1;
-    const isLast = toIndex >= questions.length;
-    next(); // lokale UI snappy
+    const isLast = toIndex >= qlenRef.current;
+    next(); // lokal snappy
     if (roomId) {
       sendNext(toIndex, isLast);
-      sendState(toIndex, isLast ? PHASES.FINISHED : PHASES.ANSWERING);
       if (isLast) sendFinish();
+      // (index, phase) wird im State-Effect automatisch gesendet
     }
   };
 
