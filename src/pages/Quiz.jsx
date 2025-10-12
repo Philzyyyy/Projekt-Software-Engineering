@@ -42,16 +42,17 @@ export default function Quiz(props) {
     syncIndexPhase,
   } = useGameEngine();
 
-  // Refs
+  // --- Refs (verhindern Reload-/Render-Loops) ---
   const qlenRef = useRef(0);
   useEffect(() => {
     qlenRef.current = questions.length;
   }, [questions.length]);
 
+  const hasLoadedRef = useRef(false); // ⬅️ nur EINMAL pro Raum laden
   const pendingStateRef = useRef(null);
   const reconcilingRef = useRef(false);
 
-  // ---- Reconcile: Remote-States robust anwenden (nie zurückspringen)
+  // ---- Reconcile: Remote-States robust anwenden (nie zurückspringen) ----
   const reconcileState = useCallback(
     ({ index: remoteIndex, phase: remotePhase }) => {
       const total = qlenRef.current;
@@ -76,7 +77,7 @@ export default function Quiz(props) {
         if (clampedIndex < index) return;
 
         if (clampedIndex > index) {
-          if (phase === PHASES.ANSWERING) reveal();
+          if (phase === PHASES.ANSWERING) reveal(); // Score sichern
           syncIndexPhase(clampedIndex, targetPhase);
           return;
         }
@@ -119,8 +120,9 @@ export default function Quiz(props) {
     [index, phase, answers, select, reveal]
   );
 
+  // next liefert optionIndex mit → ggf. erst setzen, dann reveal (Score!)
   const onNext = useCallback(
-    ({ toIndex, isLast }) => {
+    ({ toIndex, isLast, optionIndex }) => {
       if (qlenRef.current === 0) {
         pendingStateRef.current = {
           index: toIndex,
@@ -128,11 +130,14 @@ export default function Quiz(props) {
         };
         return;
       }
-      if (phase === PHASES.ANSWERING) reveal();
+      if (phase === PHASES.ANSWERING) {
+        if (optionIndex != null && answers[index] == null) select(optionIndex);
+        reveal();
+      }
       const clamped = Math.max(0, Math.min(toIndex, qlenRef.current - 1));
       syncIndexPhase(clamped, isLast ? PHASES.FINISHED : PHASES.ANSWERING);
     },
-    [phase, reveal, syncIndexPhase]
+    [phase, answers, index, select, reveal, syncIndexPhase]
   );
 
   const onFinish = useCallback(() => {
@@ -154,8 +159,19 @@ export default function Quiz(props) {
       onState: reconcileState,
     });
 
-  // ---- Fragen laden (nur von roomId/code/load abhängig!)
+  // ---- Fragen laden (EINMAL pro Raum) ----
   useEffect(() => {
+    // Reset Marker wenn Raum wechselt
+    hasLoadedRef.current = false;
+  }, [roomId, code]);
+
+  useEffect(() => {
+    if (!roomId && !code) return;
+    if (hasLoadedRef.current) {
+      setLoading(false);
+      return;
+    } // bereits geladen
+
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -174,22 +190,25 @@ export default function Quiz(props) {
         if (cancelled) return;
 
         load(qs);
+        hasLoadedRef.current = true; // ⬅️ markiere als geladen
 
-        // nach LOAD ggf. gepufferten Snapshot anwenden
+        // Gepufferten Snapshot anwenden, falls vorhanden
         if (pendingStateRef.current) {
           const snap = pendingStateRef.current;
           pendingStateRef.current = null;
           setTimeout(() => reconcileState(snap), 0);
         }
-        // ⚠️ kein initiales sendState(0, ANSWERING) → verhindert Zurückspringen
+        // kein initiales sendState(0, ANSWERING)
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [roomId, code, load]); // ⬅️ WICHTIG: KEIN reconcileState hier!
+    // ⬇️ WICHTIG: nur an roomId/code hängen, NICHT an reconcileState o.ä.
+  }, [roomId, code, load]);
 
   // ---- jede lokale Änderung → State senden
   useEffect(() => {
@@ -251,9 +270,10 @@ export default function Quiz(props) {
     const isLast = toIndex >= qlenRef.current;
     next(); // lokal snappy
     if (roomId) {
-      sendNext(toIndex, isLast);
+      const latestPick = answers[index] ?? null;
+      sendNext(toIndex, isLast, latestPick); // Auswahl mitschicken (Score-Sync)
       if (isLast) sendFinish();
-      // (index, phase) wird im State-Effect automatisch gesendet
+      // State (toIndex, phase) sendet der State-Effect automatisch
     }
   };
 

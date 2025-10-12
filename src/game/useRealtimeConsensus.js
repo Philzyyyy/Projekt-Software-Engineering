@@ -17,7 +17,7 @@ function getClientId() {
  * Events:
  *  - pick   {questionIndex, optionIndex}
  *  - reveal {questionIndex, optionIndex?}
- *  - next   {toIndex, isLast}
+ *  - next   {toIndex, isLast, optionIndex?}  👈 NEU: letzte Auswahl mitschicken
  *  - finish {}
  *  - state  {index, phase}
  *
@@ -64,8 +64,8 @@ export default function useRealtimeConsensus({
       })
       .on("broadcast", { event: "next" }, (msg) => {
         if (msg?.payload?.by === clientId) return;
-        const { toIndex, isLast } = msg.payload || {};
-        onNext?.({ toIndex, isLast, from: "remote" });
+        const { toIndex, isLast, optionIndex } = msg.payload || {};
+        onNext?.({ toIndex, isLast, optionIndex, from: "remote" }); // 👈 weiterreichen
       })
       .on("broadcast", { event: "finish" }, (msg) => {
         if (msg?.payload?.by === clientId) return;
@@ -100,10 +100,14 @@ export default function useRealtimeConsensus({
   // Public Sender
   const sendPick = (questionIndex, optionIndex) =>
     enqueueOrSend("pick", { questionIndex, optionIndex });
+
   const sendReveal = (questionIndex, optionIndex) =>
     enqueueOrSend("reveal", { questionIndex, optionIndex });
-  const sendNext = (toIndex, isLast) =>
-    enqueueOrSend("next", { toIndex, isLast });
+
+  // 👇 NEU: optionIndex mitschicken
+  const sendNext = (toIndex, isLast, optionIndex) =>
+    enqueueOrSend("next", { toIndex, isLast, optionIndex });
+
   const sendFinish = () => enqueueOrSend("finish", {});
   const sendState = (index, phase) => enqueueOrSend("state", { index, phase });
 
