@@ -2,7 +2,7 @@
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import supabase from "../lib/supabaseClient";
-import Quiz from "./Quiz.jsx"; // <— eingebettetes Quiz
+import Quiz from "./Quiz.jsx";
 
 export default function Room() {
   const { code } = useParams();
@@ -16,7 +16,7 @@ export default function Room() {
   const [chatInput, setChatInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false); // Lobby ↔ Spiel
   const [myPid, setMyPid] = useState(
     typeof window !== "undefined"
       ? localStorage.getItem("participant_row_id")
@@ -82,15 +82,33 @@ export default function Room() {
     }, 0);
   };
 
-  // ---------- Spielstart: statt Navigation → eingebettetes Quiz ----------
+  // ---------- Spielstart: persistentes Flag + Broadcast ----------
   const startGame = async () => {
+    // 1) Persistentes Flag (robust gegen Reload/Späteintritt)
     try {
-      // optional – nur wenn Spalte existiert; Fehler ignorieren
       await supabase
         .from("rooms")
         .update({ started_at: new Date().toISOString() })
         .eq("id", roomId);
-    } catch {}
+    } catch {
+      // Falls Spalte nicht existiert, ignorieren – Broadcast startet trotzdem
+    }
+
+    // 2) Sofort an alle im Raum broadcasten
+    try {
+      const ch = supabase.channel(`game-room-${roomId}`);
+      await ch.subscribe();
+      await ch.send({
+        type: "broadcast",
+        event: "game_start",
+        payload: { by: myPid, at: Date.now() },
+      });
+      supabase.removeChannel(ch);
+    } catch {
+      /* best-effort */
+    }
+
+    // 3) Lokale Sicherung & UI
     try {
       localStorage.setItem("current_room_code", code);
       localStorage.setItem("current_room_id", roomId ?? "");
@@ -98,7 +116,7 @@ export default function Room() {
     setIsPlaying(true);
   };
 
-  // ---------- 1) Raum-ID aus Code laden ----------
+  // ---------- 1) Raum-ID (und started_at) aus Code laden ----------
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -107,7 +125,7 @@ export default function Room() {
     (async () => {
       const { data, error } = await supabase
         .from("rooms")
-        .select("id")
+        .select("id, started_at")
         .eq("code", code)
         .maybeSingle();
 
@@ -117,6 +135,7 @@ export default function Room() {
       }
       if (active) {
         setRoomId(data?.id ?? null);
+        setIsPlaying(Boolean(data?.started_at)); // ⬅️ übernimmt Startstatus bei Reload/Join
         setLoading(false);
       }
     })();
@@ -195,7 +214,7 @@ export default function Room() {
             [
               {
                 room_id: roomId,
-                client_id: clientId,
+                client_id: ensureClientId(),
                 name: defaultName,
                 active: true,
               },
@@ -410,6 +429,34 @@ export default function Room() {
     };
   }, [roomId, myPid]);
 
+  // ---------- 3e) Game-Channel: Broadcast & rooms-Update hören ----------
+  useEffect(() => {
+    if (!roomId) return;
+
+    const gameCh = supabase
+      .channel(`game-room-${roomId}`)
+      .on("broadcast", { event: "game_start" }, () => {
+        setIsPlaying(true);
+      })
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "rooms",
+          filter: `id=eq.${roomId}`,
+        },
+        (payload) => {
+          if (payload?.new?.started_at) setIsPlaying(true);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(gameCh);
+    };
+  }, [roomId]);
+
   // ---------- 4) Verlassen ----------
   useEffect(() => {
     const softLeave = async () => {
@@ -618,31 +665,37 @@ export default function Room() {
                 <button
                   type="button"
                   onClick={startGame}
-                  disabled={!canStart}
+                  disabled={!canStart || isPlaying}
                   className={[
                     "rounded-xl px-5 py-3 text-sm font-semibold transition",
-                    canStart
+                    canStart && !isPlaying
                       ? "bg-indigo-600 text-white hover:bg-indigo-500"
                       : "bg-slate-200 text-slate-500 cursor-not-allowed",
                   ].join(" ")}
                   title={
                     canStart
-                      ? "Spiel starten"
+                      ? isPlaying
+                        ? "Spiel läuft…"
+                        : "Spiel starten"
                       : "Warte bis 2 Spieler online sind (inkl. dir)"
                   }
                 >
-                  Spiel starten
+                  {isPlaying ? "Spiel läuft…" : "Spiel starten"}
                 </button>
                 <span className="text-sm text-slate-500">
-                  {canStart ? "Bereit!" : "Warte auf 2. Teilnehmer…"}
+                  {canStart
+                    ? isPlaying
+                      ? "Gestartet"
+                      : "Bereit!"
+                    : "Warte auf 2. Teilnehmer…"}
                 </span>
               </div>
 
               {/* Workflow-Info */}
               <div className="mt-6 rounded-xl bg-slate-50 p-4 text-sm leading-relaxed text-slate-600">
-                <span className="font-medium">Anleitung:</span> Das Spiel kann
-                gestartet werden, sobald zwei Spieler der Lobby beigetreten und
-                online sind. Danach wird links das Quiz angezeigt.
+                <span className="font-medium">Anleitung:</span> Das Spiel
+                startet synchron für alle, sobald jemand startet. Neue/neu
+                ladende Teilnehmer steigen direkt ins Spiel ein.
               </div>
 
               {/* Back link */}
