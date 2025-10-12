@@ -1,15 +1,15 @@
 // src/pages/Quiz.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useLocation } from "react-router-dom";
-// Falls du bereits die Engine/Adapter drin hast – Imports beibehalten:
-import { fetchQuestions } from "../api/questions"; // Pfad prüfen!
-import useGameEngine from "../game/useGameEngine.js"; // Pfad prüfen!
+import { fetchQuestions } from "../api/questions"; // Adapter für Mock-Fragen
+import useGameEngine from "../game/useGameEngine.js"; // deine State-Maschine
+import useRealtimeConsensus from "../game/useRealtimeConsensus.js";
 
 export default function Quiz(props) {
   const { state } = useLocation();
   const [loading, setLoading] = useState(true);
 
-  // Props aus Room.jsx (eingebettet) – oder Fallback auf Router/LocalStorage
+  // Raum-Kontext (eingebettet oder standalone)
   const roomId =
     props?.roomId ??
     state?.roomId ??
@@ -35,10 +35,37 @@ export default function Quiz(props) {
     next,
   } = useGameEngine();
 
+  // --- Realtime-Callbacks (Remote → Engine) ---
+  const onPick = useCallback(
+    ({ questionIndex, optionIndex }) => {
+      // Nur anwenden, wenn wir synchron auf derselben Frage sind
+      if (questionIndex === index && phase === PHASES.ANSWERING) {
+        select(optionIndex);
+      }
+    },
+    [index, phase, PHASES.ANSWERING, select]
+  );
+
+  const onReveal = useCallback(() => {
+    if (phase === PHASES.ANSWERING) reveal();
+  }, [phase, PHASES.ANSWERING, reveal]);
+
+  const onNext = useCallback(() => {
+    if (phase === PHASES.REVEALED) next();
+  }, [phase, PHASES.REVEALED, next]);
+
+  const { sendPick, sendReveal, sendNext } = useRealtimeConsensus({
+    roomId,
+    onPick,
+    onReveal,
+    onNext,
+  });
+
+  // --- Fragen laden ---
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const qs = await fetchQuestions({ limit: 10 }); // aktuell Mock-Fragen
+      const qs = await fetchQuestions({ limit: 10 });
       load(qs);
       setLoading(false);
     })();
@@ -52,8 +79,6 @@ export default function Quiz(props) {
         <p className="mb-4">
           Punkte: {score} / {questions.length}
         </p>
-
-        {/* Wenn eingebettet, optionaler Exit-Button */}
         {props?.onExit ? (
           <button
             onClick={props.onExit}
@@ -74,9 +99,27 @@ export default function Quiz(props) {
 
   const picked = answers[index];
 
+  // --- Lokale UI-Aktionen → Engine + Broadcast ---
+  const handleSelect = (i) => {
+    if (phase !== PHASES.ANSWERING) return;
+    select(i);
+    if (roomId) sendPick(index, i); // Live-Sync
+  };
+
+  const handleReveal = () => {
+    if (phase !== PHASES.ANSWERING) return;
+    reveal();
+    if (roomId) sendReveal(); // Live-Sync
+  };
+
+  const handleNext = () => {
+    if (phase !== PHASES.REVEALED) return;
+    next();
+    if (roomId) sendNext(); // Live-Sync
+  };
+
   return (
     <div className="p-4 max-w-xl mx-auto">
-      {/* Optional: kleinen Kontext anzeigen */}
       <div className="text-xs text-slate-500 mb-1">
         Raum: {code ?? "—"} (ID: {roomId ?? "—"})
       </div>
@@ -105,7 +148,7 @@ export default function Quiz(props) {
                   (isCorrect ? "bg-green-100 " : "") +
                   (isWrongPick ? "bg-red-100 " : "")
                 }
-                onClick={() => select(i)}
+                onClick={() => handleSelect(i)}
                 disabled={phase !== PHASES.ANSWERING}
               >
                 {opt}
@@ -118,7 +161,7 @@ export default function Quiz(props) {
       {phase === PHASES.ANSWERING && (
         <button
           className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-40"
-          onClick={reveal}
+          onClick={handleReveal}
           disabled={picked == null}
         >
           Antwort zeigen
@@ -139,7 +182,7 @@ export default function Quiz(props) {
           </div>
           <button
             className="px-4 py-2 rounded bg-blue-600 text-white"
-            onClick={next}
+            onClick={handleNext}
           >
             Nächste Frage
           </button>
