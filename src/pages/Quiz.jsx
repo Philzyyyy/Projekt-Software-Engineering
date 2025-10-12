@@ -2,13 +2,14 @@
 import { useEffect, useState, useCallback } from "react";
 import { useLocation } from "react-router-dom";
 import { fetchQuestions } from "../api/questions.js";
-import useGameEngine from "../game/useGameEngine.js";
+import useGameEngine, { PHASES } from "../game/useGameEngine.js";
 import useRealtimeConsensus from "../game/useRealtimeConsensus.js";
 
 export default function Quiz(props) {
   const { state } = useLocation();
   const [loading, setLoading] = useState(true);
 
+  // Raum-Kontext (eingebettet oder standalone)
   const roomId =
     props?.roomId ??
     state?.roomId ??
@@ -21,7 +22,6 @@ export default function Quiz(props) {
     null;
 
   const {
-    PHASES,
     current,
     index,
     questions,
@@ -32,28 +32,28 @@ export default function Quiz(props) {
     select,
     reveal,
     next,
-    finish, // ⬅️ finish kommt aus Engine
+    finish,
   } = useGameEngine();
 
   // Remote → Engine
   const onPick = useCallback(
     ({ questionIndex, optionIndex }) => {
-      if (questionIndex === index && phase === PHASES.ANSWERING)
+      if (questionIndex === index && phase === PHASES.ANSWERING) {
         select(optionIndex);
+      }
     },
-    [index, phase, PHASES.ANSWERING, select]
+    [index, phase, select]
   );
 
+  // WICHTIG: Reveal IMMER anwenden (Engine ist idempotent)
   const onReveal = useCallback(() => {
-    if (phase === PHASES.ANSWERING) reveal();
-  }, [phase, PHASES.ANSWERING, reveal]);
+    reveal();
+  }, [reveal]);
 
   const onNext = useCallback(() => {
-    // Wenn remote 'next' kommt, einfach durch die Engine gehen
     next();
   }, [next]);
 
-  // ⬇️ neu: Remote-Finish hart übernehmen (failsafe)
   const onFinish = useCallback(() => {
     finish();
   }, [finish]);
@@ -80,6 +80,7 @@ export default function Quiz(props) {
   }, [load]);
 
   if (loading) return <div className="p-6">Lade Fragen…</div>;
+
   if (phase === PHASES.FINISHED) {
     return (
       <div className="p-6 max-w-xl mx-auto">
@@ -108,7 +109,7 @@ export default function Quiz(props) {
   const picked = answers[index];
   const qText = current.text ?? current.question ?? current.title ?? "";
 
-  // Lokale Aktionen
+  // Lokale Aktionen → Engine + Broadcast
   const handleSelect = (i) => {
     if (phase !== PHASES.ANSWERING) return;
     select(i);
@@ -117,24 +118,17 @@ export default function Quiz(props) {
 
   const handleReveal = () => {
     if (phase !== PHASES.ANSWERING) return;
-    reveal();
-    if (roomId) sendReveal();
+    reveal(); // lokal idempotent
+    if (roomId) sendReveal(index); // Index mitsenden
   };
 
   const handleNext = () => {
-    // Erkennen, ob dies die letzte Frage ist
     const isLast = index + 1 >= questions.length;
-
     next();
     if (roomId) {
       sendNext();
-      if (isLast) {
-        // Failsafe: explizit 'finish' senden, damit alle sicher im Endbildschirm landen
-        sendFinish();
-      }
+      if (isLast) sendFinish(); // Failsafe: beide sicher zum Endscreen
     }
-    // Lokal: Engine setzt bei letzter Frage ohnehin auf FINISHED,
-    // der 'finish'-Broadcast stellt sicher, dass der zweite Client nachzieht.
   };
 
   return (

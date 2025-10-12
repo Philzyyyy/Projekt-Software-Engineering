@@ -14,7 +14,8 @@ function getClientId() {
 
 /**
  * Realtime-Konsens für Quiz:
- * - Events: 'pick', 'reveal', 'next', 'finish'
+ * broadcastet & empfängt: 'pick', 'reveal', 'next', 'finish'
+ * - reveal sendet zusätzlich questionIndex
  */
 export default function useRealtimeConsensus({
   roomId,
@@ -38,14 +39,14 @@ export default function useRealtimeConsensus({
       })
       .on("broadcast", { event: "reveal" }, (msg) => {
         if (msg?.payload?.by === clientId) return;
-        onReveal?.({ from: "remote" });
+        const { questionIndex } = msg.payload || {};
+        onReveal?.({ questionIndex, from: "remote" });
       })
       .on("broadcast", { event: "next" }, (msg) => {
         if (msg?.payload?.by === clientId) return;
         onNext?.({ from: "remote" });
       })
       .on("broadcast", { event: "finish" }, (msg) => {
-        // ⬅️ neu
         if (msg?.payload?.by === clientId) return;
         onFinish?.({ from: "remote" });
       })
@@ -66,11 +67,11 @@ export default function useRealtimeConsensus({
     });
   };
 
-  const sendReveal = () => {
+  const sendReveal = (questionIndex) => {
     channelRef.current?.send({
       type: "broadcast",
       event: "reveal",
-      payload: { by: clientId, at: Date.now() },
+      payload: { by: clientId, questionIndex, at: Date.now() },
     });
   };
 
@@ -82,7 +83,6 @@ export default function useRealtimeConsensus({
     });
   };
 
-  // ⬇️ neu: finish senden
   const sendFinish = () => {
     channelRef.current?.send({
       type: "broadcast",
