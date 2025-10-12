@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 import { fetchQuestions } from "../api/questions.js";
 import useGameEngine, { PHASES } from "../game/useGameEngine.js";
 import useRealtimeConsensus from "../game/useRealtimeConsensus.js";
+import supabase from "../lib/supabaseClient";
 
 export default function Quiz(props) {
   const { state } = useLocation();
@@ -18,7 +19,7 @@ export default function Quiz(props) {
     props?.code ??
     state?.code ??
     localStorage.getItem("current_room_code") ??
-    null;
+    "NO-CODE";
 
   const {
     current,
@@ -34,7 +35,7 @@ export default function Quiz(props) {
     finish,
   } = useGameEngine();
 
-  // Remote → Engine
+  // Realtime (wie bisher)
   const onPick = useCallback(
     ({ questionIndex, optionIndex }) => {
       if (questionIndex === index && phase === PHASES.ANSWERING)
@@ -44,10 +45,8 @@ export default function Quiz(props) {
   );
 
   const onReveal = useCallback(() => {
-    // idempotent – Engine verhindert Doppelzählung
     reveal();
   }, [reveal]);
-
   const onNext = useCallback(() => {
     next();
   }, [next]);
@@ -63,18 +62,30 @@ export default function Quiz(props) {
     onFinish,
   });
 
-  // Fragen laden
+  // ---- Fragen laden mit deterministischem Seed ----
   useEffect(() => {
     (async () => {
       setLoading(true);
       try {
-        const qs = await fetchQuestions({ limit: 10 });
+        // started_at für die Seed-Bildung holen (falls roomId existiert)
+        let startedAt = null;
+        if (roomId) {
+          const { data, error } = await supabase
+            .from("rooms")
+            .select("started_at")
+            .eq("id", roomId)
+            .maybeSingle();
+          if (!error && data?.started_at) startedAt = data.started_at;
+        }
+        const seed = startedAt ? `${code}|${startedAt}` : `${code}|no-start`;
+
+        const qs = await fetchQuestions({ limit: 10, seed });
         load(qs);
       } finally {
         setLoading(false);
       }
     })();
-  }, [load]);
+  }, [load, roomId, code]);
 
   if (loading) return <div className="p-6">Lade Fragen…</div>;
 
@@ -105,24 +116,17 @@ export default function Quiz(props) {
 
   const picked = answers[index];
   const qText = current.text ?? current.question ?? current.title ?? "";
-  const hasValidSolution =
-    Number.isInteger(current.correctIndex) &&
-    current.correctIndex >= 0 &&
-    current.correctIndex < current.options.length;
 
-  // Lokale Aktionen
   const handleSelect = (i) => {
     if (phase !== PHASES.ANSWERING) return;
     select(i);
     if (roomId) sendPick(index, i);
   };
-
   const handleReveal = () => {
     if (phase !== PHASES.ANSWERING) return;
     reveal();
     if (roomId) sendReveal(index);
   };
-
   const handleNext = () => {
     const isLast = index + 1 >= questions.length;
     next();
@@ -186,11 +190,7 @@ export default function Quiz(props) {
         <div className="space-y-3">
           <div className="p-3 rounded bg-gray-50 border">
             <div className="font-medium">
-              {hasValidSolution ? (
-                <>Lösung: {current.options[current.correctIndex]}</>
-              ) : (
-                <>Keine gültige Lösung hinterlegt</>
-              )}
+              Lösung: {current.options[current.correctIndex] ?? "—"}
             </div>
             {current.explanation && (
               <p className="text-sm mt-1 text-gray-700">
