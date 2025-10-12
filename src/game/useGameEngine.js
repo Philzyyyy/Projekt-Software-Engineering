@@ -39,6 +39,9 @@ function reducer(state, action) {
         return { ...state, phase: PHASES.FINISHED };
       return { ...state, index: next, phase: PHASES.ANSWERING };
     }
+    // ⬇️ NEU: Hartes Finish, falls ein Client 'finish' broadcastet
+    case "FINISH":
+      return { ...state, phase: PHASES.FINISHED };
     default:
       return state;
   }
@@ -63,11 +66,12 @@ export default function useGameEngine() {
   );
   const reveal = useCallback(() => dispatch({ type: "REVEAL" }), []);
   const next = useCallback(() => dispatch({ type: "NEXT" }), []);
+  const finish = useCallback(() => dispatch({ type: "FINISH" }), []); // ⬅️ neu
 
   const current = useMemo(
     () => state.questions[state.index] ?? null,
     [state.questions, state.index]
   );
 
-  return { ...state, PHASES, current, load, select, reveal, next };
+  return { ...state, PHASES, current, load, select, reveal, next, finish };
 }

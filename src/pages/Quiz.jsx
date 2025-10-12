@@ -1,7 +1,7 @@
 // src/pages/Quiz.jsx
 import { useEffect, useState, useCallback } from "react";
 import { useLocation } from "react-router-dom";
-import { fetchQuestions } from "../api/questions.js"; // ← .js nicht vergessen
+import { fetchQuestions } from "../api/questions.js";
 import useGameEngine from "../game/useGameEngine.js";
 import useRealtimeConsensus from "../game/useRealtimeConsensus.js";
 
@@ -9,13 +9,11 @@ export default function Quiz(props) {
   const { state } = useLocation();
   const [loading, setLoading] = useState(true);
 
-  // Raum-Kontext (eingebettet oder standalone)
   const roomId =
     props?.roomId ??
     state?.roomId ??
     localStorage.getItem("current_room_id") ??
     null;
-
   const code =
     props?.code ??
     state?.code ??
@@ -34,14 +32,14 @@ export default function Quiz(props) {
     select,
     reveal,
     next,
+    finish, // ⬅️ finish kommt aus Engine
   } = useGameEngine();
 
-  // --- Realtime-Callbacks (Remote → Engine) ---
+  // Remote → Engine
   const onPick = useCallback(
     ({ questionIndex, optionIndex }) => {
-      if (questionIndex === index && phase === PHASES.ANSWERING) {
+      if (questionIndex === index && phase === PHASES.ANSWERING)
         select(optionIndex);
-      }
     },
     [index, phase, PHASES.ANSWERING, select]
   );
@@ -51,17 +49,24 @@ export default function Quiz(props) {
   }, [phase, PHASES.ANSWERING, reveal]);
 
   const onNext = useCallback(() => {
-    if (phase === PHASES.REVEALED) next();
-  }, [phase, PHASES.REVEALED, next]);
+    // Wenn remote 'next' kommt, einfach durch die Engine gehen
+    next();
+  }, [next]);
 
-  const { sendPick, sendReveal, sendNext } = useRealtimeConsensus({
+  // ⬇️ neu: Remote-Finish hart übernehmen (failsafe)
+  const onFinish = useCallback(() => {
+    finish();
+  }, [finish]);
+
+  const { sendPick, sendReveal, sendNext, sendFinish } = useRealtimeConsensus({
     roomId,
     onPick,
     onReveal,
     onNext,
+    onFinish,
   });
 
-  // --- Fragen laden ---
+  // Fragen laden
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -101,11 +106,9 @@ export default function Quiz(props) {
   if (!current) return <div className="p-6">Keine Frage gefunden.</div>;
 
   const picked = answers[index];
-
-  // Fallback für Frage-Text (falls Adapter mal was nicht abdeckt)
   const qText = current.text ?? current.question ?? current.title ?? "";
 
-  // --- Lokale UI-Aktionen → Engine + Broadcast ---
+  // Lokale Aktionen
   const handleSelect = (i) => {
     if (phase !== PHASES.ANSWERING) return;
     select(i);
@@ -119,9 +122,19 @@ export default function Quiz(props) {
   };
 
   const handleNext = () => {
-    if (phase !== PHASES.REVEALED) return;
+    // Erkennen, ob dies die letzte Frage ist
+    const isLast = index + 1 >= questions.length;
+
     next();
-    if (roomId) sendNext();
+    if (roomId) {
+      sendNext();
+      if (isLast) {
+        // Failsafe: explizit 'finish' senden, damit alle sicher im Endbildschirm landen
+        sendFinish();
+      }
+    }
+    // Lokal: Engine setzt bei letzter Frage ohnehin auf FINISHED,
+    // der 'finish'-Broadcast stellt sicher, dass der zweite Client nachzieht.
   };
 
   return (

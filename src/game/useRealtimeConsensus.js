@@ -14,26 +14,24 @@ function getClientId() {
 
 /**
  * Realtime-Konsens für Quiz:
- * - broadcastet lokale Events ('pick', 'reveal', 'next')
- * - hört auf Remote-Events und ruft die bereitgestellten Handler auf
+ * - Events: 'pick', 'reveal', 'next', 'finish'
  */
 export default function useRealtimeConsensus({
   roomId,
   onPick,
   onReveal,
   onNext,
+  onFinish,
 }) {
   const clientId = useMemo(() => getClientId(), []);
   const channelRef = useRef(null);
 
-  // Channel abonnieren
   useEffect(() => {
     if (!roomId) return;
 
     const ch = supabase
-      .channel(`game-room-${roomId}-quiz`) // eigenständiger Channel für Quiz-Events
+      .channel(`game-room-${roomId}-quiz`)
       .on("broadcast", { event: "pick" }, (msg) => {
-        // Eigene Events ignorieren
         if (msg?.payload?.by === clientId) return;
         const { questionIndex, optionIndex } = msg.payload || {};
         onPick?.({ questionIndex, optionIndex, from: "remote" });
@@ -46,6 +44,11 @@ export default function useRealtimeConsensus({
         if (msg?.payload?.by === clientId) return;
         onNext?.({ from: "remote" });
       })
+      .on("broadcast", { event: "finish" }, (msg) => {
+        // ⬅️ neu
+        if (msg?.payload?.by === clientId) return;
+        onFinish?.({ from: "remote" });
+      })
       .subscribe();
 
     channelRef.current = ch;
@@ -53,9 +56,8 @@ export default function useRealtimeConsensus({
       if (ch) supabase.removeChannel(ch);
       channelRef.current = null;
     };
-  }, [roomId, clientId, onPick, onReveal, onNext]);
+  }, [roomId, clientId, onPick, onReveal, onNext, onFinish]);
 
-  // Sender
   const sendPick = (questionIndex, optionIndex) => {
     channelRef.current?.send({
       type: "broadcast",
@@ -80,5 +82,14 @@ export default function useRealtimeConsensus({
     });
   };
 
-  return { sendPick, sendReveal, sendNext };
+  // ⬇️ neu: finish senden
+  const sendFinish = () => {
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "finish",
+      payload: { by: clientId, at: Date.now() },
+    });
+  };
+
+  return { sendPick, sendReveal, sendNext, sendFinish };
 }
