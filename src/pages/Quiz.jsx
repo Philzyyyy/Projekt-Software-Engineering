@@ -9,7 +9,6 @@ export default function Quiz(props) {
   const { state } = useLocation();
   const [loading, setLoading] = useState(true);
 
-  // Raum-Kontext (eingebettet oder standalone)
   const roomId =
     props?.roomId ??
     state?.roomId ??
@@ -38,22 +37,20 @@ export default function Quiz(props) {
   // Remote → Engine
   const onPick = useCallback(
     ({ questionIndex, optionIndex }) => {
-      if (questionIndex === index && phase === PHASES.ANSWERING) {
+      if (questionIndex === index && phase === PHASES.ANSWERING)
         select(optionIndex);
-      }
     },
     [index, phase, select]
   );
 
-  // WICHTIG: Reveal IMMER anwenden (Engine ist idempotent)
   const onReveal = useCallback(() => {
+    // idempotent – Engine verhindert Doppelzählung
     reveal();
   }, [reveal]);
 
   const onNext = useCallback(() => {
     next();
   }, [next]);
-
   const onFinish = useCallback(() => {
     finish();
   }, [finish]);
@@ -108,8 +105,12 @@ export default function Quiz(props) {
 
   const picked = answers[index];
   const qText = current.text ?? current.question ?? current.title ?? "";
+  const hasValidSolution =
+    Number.isInteger(current.correctIndex) &&
+    current.correctIndex >= 0 &&
+    current.correctIndex < current.options.length;
 
-  // Lokale Aktionen → Engine + Broadcast
+  // Lokale Aktionen
   const handleSelect = (i) => {
     if (phase !== PHASES.ANSWERING) return;
     select(i);
@@ -118,8 +119,8 @@ export default function Quiz(props) {
 
   const handleReveal = () => {
     if (phase !== PHASES.ANSWERING) return;
-    reveal(); // lokal idempotent
-    if (roomId) sendReveal(index); // Index mitsenden
+    reveal();
+    if (roomId) sendReveal(index);
   };
 
   const handleNext = () => {
@@ -127,7 +128,7 @@ export default function Quiz(props) {
     next();
     if (roomId) {
       sendNext();
-      if (isLast) sendFinish(); // Failsafe: beide sicher zum Endscreen
+      if (isLast) sendFinish();
     }
   };
 
@@ -185,7 +186,11 @@ export default function Quiz(props) {
         <div className="space-y-3">
           <div className="p-3 rounded bg-gray-50 border">
             <div className="font-medium">
-              Lösung: {current.options[current.correctIndex]}
+              {hasValidSolution ? (
+                <>Lösung: {current.options[current.correctIndex]}</>
+              ) : (
+                <>Keine gültige Lösung hinterlegt</>
+              )}
             </div>
             {current.explanation && (
               <p className="text-sm mt-1 text-gray-700">
