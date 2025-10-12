@@ -1,8 +1,8 @@
 // src/pages/Quiz.jsx
 import { useEffect, useState, useCallback } from "react";
 import { useLocation } from "react-router-dom";
-import { fetchQuestions } from "../api/questions"; // Adapter für Mock-Fragen
-import useGameEngine from "../game/useGameEngine.js"; // deine State-Maschine
+import { fetchQuestions } from "../api/questions.js"; // ← .js nicht vergessen
+import useGameEngine from "../game/useGameEngine.js";
 import useRealtimeConsensus from "../game/useRealtimeConsensus.js";
 
 export default function Quiz(props) {
@@ -15,6 +15,7 @@ export default function Quiz(props) {
     state?.roomId ??
     localStorage.getItem("current_room_id") ??
     null;
+
   const code =
     props?.code ??
     state?.code ??
@@ -38,7 +39,6 @@ export default function Quiz(props) {
   // --- Realtime-Callbacks (Remote → Engine) ---
   const onPick = useCallback(
     ({ questionIndex, optionIndex }) => {
-      // Nur anwenden, wenn wir synchron auf derselben Frage sind
       if (questionIndex === index && phase === PHASES.ANSWERING) {
         select(optionIndex);
       }
@@ -65,9 +65,12 @@ export default function Quiz(props) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const qs = await fetchQuestions({ limit: 10 });
-      load(qs);
-      setLoading(false);
+      try {
+        const qs = await fetchQuestions({ limit: 10 });
+        load(qs);
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [load]);
 
@@ -99,23 +102,26 @@ export default function Quiz(props) {
 
   const picked = answers[index];
 
+  // Fallback für Frage-Text (falls Adapter mal was nicht abdeckt)
+  const qText = current.text ?? current.question ?? current.title ?? "";
+
   // --- Lokale UI-Aktionen → Engine + Broadcast ---
   const handleSelect = (i) => {
     if (phase !== PHASES.ANSWERING) return;
     select(i);
-    if (roomId) sendPick(index, i); // Live-Sync
+    if (roomId) sendPick(index, i);
   };
 
   const handleReveal = () => {
     if (phase !== PHASES.ANSWERING) return;
     reveal();
-    if (roomId) sendReveal(); // Live-Sync
+    if (roomId) sendReveal();
   };
 
   const handleNext = () => {
     if (phase !== PHASES.REVEALED) return;
     next();
-    if (roomId) sendNext(); // Live-Sync
+    if (roomId) sendNext();
   };
 
   return (
@@ -128,7 +134,7 @@ export default function Quiz(props) {
         <div className="text-sm text-gray-500">
           Frage {index + 1} / {questions.length}
         </div>
-        <h1 className="text-xl font-semibold">{current.text}</h1>
+        <h1 className="text-xl font-semibold">{qText}</h1>
       </header>
 
       <ul className="space-y-2 mb-4">
