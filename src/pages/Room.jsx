@@ -79,6 +79,18 @@ export default function Room() {
     }
   };
 
+  // --- Neue UI-Helper für Chat-Bubbles ---
+  const isMine = useCallback((m) => m.senderPid === myPid, [myPid]);
+
+  const formatTime = (iso) => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch {
+      return "";
+    }
+  };
+
   // ---------- Chat: Laden & Realtime ----------
   const loadMessages = useCallback(async (rid) => {
     if (!rid) return;
@@ -170,7 +182,13 @@ export default function Room() {
     });
 
     if (error) {
-      console.error("rpc chat_send_message error", error);
+      console.group("rpc chat_send_message error");
+      console.log("message:", error.message);
+      console.log("details:", error.details);
+      console.log("hint:", error.hint);
+      console.log("code:", error.code);
+      console.log("full:", JSON.stringify(error, null, 2));
+      console.groupEnd();
       setSending(false);
       return;
     }
@@ -720,14 +738,54 @@ export default function Room() {
             ref={scrollRef}
             className="mt-4 flex-1 overflow-y-auto space-y-2"
           >
-            {messages.map((m) => (
-              <div key={m.id} className="flex flex-col">
-                <span className="text-xs text-slate-500">{m.sender}</span>
-                <span className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-800 inline-block w-fit max-w-[75%]">
-                  {m.text}
-                </span>
-              </div>
-            ))}
+            {messages.map((m) => {
+              const mine = isMine(m);
+              return (
+                <div
+                  key={m.id}
+                  className={[
+                    "flex w-full",
+                    mine ? "justify-end" : "justify-start",
+                  ].join(" ")}
+                >
+                  <div
+                    className={[
+                      "max-w-[75%] flex flex-col",
+                      mine ? "items-end" : "items-start",
+                    ].join(" ")}
+                  >
+                    {/* Name nur bei anderen anzeigen */}
+                    {!mine && (
+                      <span className="mb-1 text-[11px] leading-none text-slate-500">
+                        {m.sender}
+                      </span>
+                    )}
+
+                    {/* Bubble */}
+                    <div
+                      className={[
+                        "px-3 py-2 text-sm shadow-sm",
+                        mine
+                          ? "bg-indigo-600 text-white rounded-2xl rounded-tr-sm"
+                          : "bg-slate-100 text-slate-800 rounded-2xl rounded-tl-sm",
+                      ].join(" ")}
+                    >
+                      {m.text}
+                    </div>
+
+                    {/* Zeitstempel */}
+                    <span
+                      className={[
+                        "mt-1 text-[10px] leading-none opacity-70",
+                        mine ? "text-indigo-700" : "text-slate-500",
+                      ].join(" ")}
+                    >
+                      {formatTime(m.createdAt)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
           <form
