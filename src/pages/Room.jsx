@@ -1,6 +1,6 @@
 // src/pages/Room.jsx
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import supabase from "../lib/supabaseClient";
 import Quiz from "./Quiz.jsx";
 
@@ -8,35 +8,44 @@ export default function Room() {
   const { code } = useParams();
   const navigate = useNavigate();
 
-  // ----- State -----
-  const [copied, setCopied] = useState(false);
+  // ---------- State ----------
   const [roomId, setRoomId] = useState(null);
   const [participants, setParticipants] = useState([]);
-  const [messages, setMessages] = useState([]); // Dummy-Chat nur lokal
-  const [chatInput, setChatInput] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [onlineClientIds, setOnlineClientIds] = useState(new Set());
+  const [isPlaying, setIsPlaying] = useState(false);
   const [dbError, setDbError] = useState(null);
-  const [isPlaying, setIsPlaying] = useState(false); // Lobby ↔ Spiel
+
+  // Chat
+  const [messages, setMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef(null);
+
+  // UI
+  const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // lokale Identität
   const [myPid, setMyPid] = useState(
     typeof window !== "undefined"
       ? localStorage.getItem("participant_row_id")
       : null
   );
-  const [onlineClientIds, setOnlineClientIds] = useState(new Set()); // Presence
-  const scrollRef = useRef(null);
 
+  // abgeleitet
   const inviteUrl = useMemo(
     () => `${window.location.origin}/room/${code}`,
     [code]
   );
-
-  // --- abgeleitete Stati ---
   const iAmInRoom = participants.some((p) => p.id === myPid);
   const onlineCount = participants.reduce(
     (acc, p) => acc + (onlineClientIds.has(p.client_id) ? 1 : 0),
     0
   );
   const canStart = iAmInRoom && onlineCount >= 2;
+  const canSend = Boolean(
+    roomId && myPid && iAmInRoom && chatInput.trim() && !sending
+  );
 
   // ---------- Helpers ----------
   const ensureClientId = () => {
@@ -49,31 +58,10 @@ export default function Room() {
     return id;
   };
 
-  const copyInvite = async () => {
-    try {
-      await navigator.clipboard.writeText(inviteUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* no-op */
-    }
-  };
+  const myDisplayName = () =>
+    participants.find((p) => p.id === myPid)?.name ?? "Ich";
 
-  const myDisplayName = () => {
-    return participants.find((p) => p.id === myPid)?.name ?? "Ich";
-  };
-
-  const sendChat = () => {
-    if (!chatInput.trim()) return;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        sender: myDisplayName(),
-        text: chatInput.trim(),
-      },
-    ]);
-    setChatInput("");
+  const smoothScrollToBottom = () => {
     setTimeout(() => {
       scrollRef.current?.scrollTo({
         top: scrollRef.current.scrollHeight,
@@ -82,19 +70,155 @@ export default function Room() {
     }, 0);
   };
 
-  // ---------- Spielstart: persistentes Flag + Broadcast ----------
-  const startGame = async () => {
-    // 1) Persistentes Flag (robust gegen Reload/Späteintritt)
+  const copyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+    } finally {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1000);
+    }
+  };
+
+  // ---------- Chat: Laden & Realtime ----------
+  const loadMessages = useCallback(async (rid) => {
+    if (!rid) return;
+    const { data, error } = await supabase
+      .from("message")
+      .select(
+        "id, sender_name, content, created_at, sender_pid, session_id, room_id"
+      )
+      .eq("room_id", rid)
+      .order("created_at", { ascending: true })
+      .limit(200);
+    if (error) {
+      console.error("message select error", error);
+      return;
+    }
+    setMessages(
+      (data ?? []).map((m) => ({
+        id: m.id,
+        sender: m.sender_name,
+        text: m.content,
+        createdAt: m.created_at,
+        senderPid: m.sender_pid,
+        sessionId: m.session_id,
+      }))
+    );
+    smoothScrollToBottom();
+  }, []);
+
+  const subscribeMessages = useCallback((rid) => {
+    if (!rid) return () => {};
+    const ch = supabase
+      .channel(`msg-room-${rid}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "message",
+          filter: `room_id=eq.${rid}`,
+        },
+        (payload) => {
+          const m = payload.new;
+          setMessages((prev) => {
+            if (prev.some((x) => x.id === m.id)) return prev; // dedupe
+            return [
+              ...prev,
+              {
+                id: m.id,
+                sender: m.sender_name,
+                text: m.content,
+                createdAt: m.created_at,
+                senderPid: m.sender_pid,
+                sessionId: m.session_id,
+              },
+            ];
+          });
+          smoothScrollToBottom();
+        }
+      )
+      .subscribe();
+    return () => supabase.removeChannel(ch);
+  }, []);
+
+  // Vor Senden: active setzen (RLS-Policy)
+  const ensureActiveParticipant = useCallback(async () => {
+    if (!roomId || !myPid) return;
     try {
       await supabase
-        .from("rooms")
-        .update({ started_at: new Date().toISOString() })
-        .eq("id", roomId);
-    } catch {
-      // Falls Spalte nicht existiert, ignorieren – Broadcast startet trotzdem
+        .from("participants")
+        .update({ active: true, last_seen: new Date().toISOString() })
+        .eq("id", myPid)
+        .eq("room_id", roomId);
+    } catch {}
+  }, [roomId, myPid]);
+
+  // ---------- Chat: Senden via RPC ----------
+  const sendChat = useCallback(async () => {
+    const text = chatInput.trim();
+    if (!text || !roomId || !myPid || !iAmInRoom || sending) return;
+
+    setSending(true);
+    await ensureActiveParticipant();
+
+    // 1) RPC – schreibt atomar über SECURITY DEFINER
+    const { data: row, error } = await supabase.rpc("chat_send_message", {
+      p_room: roomId,
+      p_sender: myPid,
+      p_content: text,
+    });
+
+    if (error) {
+      console.error("rpc chat_send_message error", error);
+      setSending(false);
+      return;
     }
 
-    // 2) Sofort an alle im Raum broadcasten
+    // 2) Eingabe leeren – Anzeige kommt via Realtime bei allen Clients
+    setChatInput("");
+    setSending(false);
+
+    // 3) Fallback: Falls Realtime verspätet ist, füge lokal hinzu (nur wenn noch nicht vorhanden)
+    if (row && !messages.some((m) => m.id === row.id)) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: row.id,
+          sender: row.sender_name,
+          text: row.content,
+          createdAt: row.created_at,
+          senderPid: row.sender_pid,
+          sessionId: row.session_id,
+        },
+      ]);
+      smoothScrollToBottom();
+    }
+
+    // 4) Letzte Absicherung
+    setTimeout(() => loadMessages(roomId), 250);
+  }, [
+    chatInput,
+    roomId,
+    myPid,
+    iAmInRoom,
+    sending,
+    ensureActiveParticipant,
+    loadMessages,
+    messages,
+  ]);
+
+  // ---------- Spielstart ----------
+  const startGame = useCallback(async () => {
+    try {
+      const startedAtIso = new Date().toISOString();
+      await supabase
+        .from("rooms")
+        .update({ started_at: startedAtIso })
+        .eq("id", roomId);
+      setIsPlaying(true);
+    } catch {}
+
     try {
       const ch = supabase.channel(`game-room-${roomId}`);
       await ch.subscribe();
@@ -104,19 +228,15 @@ export default function Room() {
         payload: { by: myPid, at: Date.now() },
       });
       supabase.removeChannel(ch);
-    } catch {
-      /* best-effort */
-    }
+    } catch {}
 
-    // 3) Lokale Sicherung & UI
     try {
       localStorage.setItem("current_room_code", code);
       localStorage.setItem("current_room_id", roomId ?? "");
     } catch {}
-    setIsPlaying(true);
-  };
+  }, [roomId, myPid, code]);
 
-  // ---------- 1) Raum-ID (und started_at) aus Code laden ----------
+  // ---------- Room laden ----------
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -129,13 +249,17 @@ export default function Room() {
         .eq("code", code)
         .maybeSingle();
 
-      if (error) {
-        console.error("rooms select error", error);
-        if (active) setDbError("Konnte Raum nicht laden.");
+      if (error || !data) {
+        if (active) {
+          setDbError("Konnte Raum nicht laden.");
+          setLoading(false);
+        }
+        return;
       }
+
       if (active) {
-        setRoomId(data?.id ?? null);
-        setIsPlaying(Boolean(data?.started_at)); // ⬅️ übernimmt Startstatus bei Reload/Join
+        setRoomId(data.id);
+        setIsPlaying(Boolean(data.started_at));
         setLoading(false);
       }
     })();
@@ -145,7 +269,7 @@ export default function Room() {
     };
   }, [code]);
 
-  // ---------- 2) Betreten/Rejoin ----------
+  // ---------- Teilnehmer beitreten / reaktivieren ----------
   useEffect(() => {
     if (!roomId) return;
     let cancelled = false;
@@ -155,7 +279,7 @@ export default function Room() {
         const clientId = ensureClientId();
         const defaultName = `Spieler ${Math.floor(Math.random() * 900 + 100)}`;
 
-        // 2.1 Reaktivieren per gespeicherter Row-ID
+        // 1) Bereits gespeicherten Participant wieder aktivieren
         const storedRowId = localStorage.getItem("participant_row_id");
         if (storedRowId) {
           const { error: upErr1, count: c1 } = await supabase
@@ -164,90 +288,59 @@ export default function Room() {
             .eq("id", storedRowId)
             .eq("room_id", roomId)
             .select("id", { count: "exact", head: true });
-
           if (!upErr1 && c1 === 1) {
             if (!cancelled) setMyPid(storedRowId);
-            const { data: fresh } = await supabase
-              .from("participants")
-              .select("id, client_id, name, joined_at")
-              .eq("room_id", roomId)
-              .eq("active", true)
-              .order("joined_at", { ascending: true });
-            if (!cancelled && fresh) setParticipants(fresh);
-            return;
           }
         }
 
-        // 2.2 Prüfen, ob (room_id, client_id) existiert
-        const { data: existing, error: selErr } = await supabase
+        // 2) Existiert (room_id, client_id)?
+        const { data: existing } = await supabase
           .from("participants")
-          .select("id, name")
+          .select("id")
           .eq("room_id", roomId)
           .eq("client_id", clientId)
           .maybeSingle();
 
-        if (!selErr && existing?.id) {
-          const { error: upErr2 } = await supabase
+        if (existing?.id) {
+          await supabase
             .from("participants")
             .update({ active: true })
-            .eq("id", existing.id)
-            .eq("room_id", roomId);
-
-          if (!upErr2) {
-            localStorage.setItem("participant_row_id", existing.id);
-            if (!cancelled) setMyPid(existing.id);
-            const { data: fresh } = await supabase
-              .from("participants")
-              .select("id, client_id, name, joined_at")
-              .eq("room_id", roomId)
-              .eq("active", true)
-              .order("joined_at", { ascending: true });
-            if (!cancelled && fresh) setParticipants(fresh);
-            return;
-          }
-        }
-
-        // 2.3 Kein bestehender Datensatz -> normaler Join via UPSERT
-        const { data: upserted, error } = await supabase
-          .from("participants")
-          .upsert(
-            [
-              {
-                room_id: roomId,
-                client_id: ensureClientId(),
-                name: defaultName,
-                active: true,
-              },
-            ],
-            { onConflict: "room_id,client_id" }
-          )
-          .select("id, name")
-          .single();
-
-        if (error) {
-          console.error("participants upsert error", error);
-          if (error.message?.includes("ROOM_FULL")) {
-            alert("Dieser Raum ist bereits voll (max. 2).");
-            navigate("/", { replace: true });
-            return;
-          }
-          setDbError(error.message);
-          return;
-        }
-
-        if (!cancelled && upserted?.id) {
-          localStorage.setItem("participant_row_id", upserted.id);
-          setMyPid(upserted.id);
-          const { data: fresh } = await supabase
+            .eq("id", existing.id);
+          localStorage.setItem("participant_row_id", existing.id);
+          if (!cancelled) setMyPid(existing.id);
+        } else {
+          // 3) Join
+          const { data: upserted, error } = await supabase
             .from("participants")
-            .select("id, client_id, name, joined_at")
-            .eq("room_id", roomId)
-            .eq("active", true)
-            .order("joined_at", { ascending: true });
-          if (!cancelled && fresh) setParticipants(fresh);
+            .upsert(
+              [
+                {
+                  room_id: roomId,
+                  client_id: clientId,
+                  name: defaultName,
+                  active: true,
+                },
+              ],
+              {
+                onConflict: "room_id,client_id",
+              }
+            )
+            .select("id")
+            .single();
+          if (error) {
+            if (error.message?.includes("ROOM_FULL")) {
+              navigate("/", { replace: true });
+              return;
+            }
+            setDbError(error.message);
+            return;
+          }
+          if (!cancelled && upserted?.id) {
+            localStorage.setItem("participant_row_id", upserted.id);
+            setMyPid(upserted.id);
+          }
         }
       } catch (e) {
-        console.error(e);
         setDbError("Fehler beim Beitritt/Rejoin.");
       }
     })();
@@ -257,29 +350,30 @@ export default function Room() {
     };
   }, [roomId, navigate]);
 
-  // ---------- 3) Teilnehmer initial laden + Realtime abonnieren ----------
+  // ---------- Teilnehmerliste laden + Realtime ----------
   useEffect(() => {
     if (!roomId) return;
 
     let channel;
 
-    async function loadParticipants() {
-      const { data, error } = await supabase
+    async function loadParticipantsOnce() {
+      const { data } = await supabase
         .from("participants")
-        .select("id, client_id, name, joined_at")
+        .select("id, client_id, name, joined_at, active")
         .eq("room_id", roomId)
         .eq("active", true)
         .order("joined_at", { ascending: true });
-
-      if (error) {
-        console.error("participants select error", error);
-        setDbError(error.message);
-        return;
-      }
-      setParticipants(data ?? []);
+      setParticipants(
+        (data ?? []).map((p) => ({
+          id: p.id,
+          client_id: p.client_id,
+          name: p.name,
+          joined_at: p.joined_at,
+        }))
+      );
     }
 
-    loadParticipants();
+    loadParticipantsOnce();
 
     channel = supabase
       .channel(`room-${roomId}-participants`)
@@ -293,45 +387,39 @@ export default function Room() {
         },
         (payload) => {
           setParticipants((prev) => {
-            const { eventType, new: newRow, old: oldRow } = payload;
+            const { eventType, new: n, old: o } = payload;
 
             if (eventType === "INSERT") {
-              if (
-                newRow.active === true &&
-                !prev.some((p) => p.id === newRow.id)
-              ) {
+              if (n.active && !prev.some((p) => p.id === n.id)) {
                 return [
                   ...prev,
                   {
-                    id: newRow.id,
-                    client_id: newRow.client_id,
-                    name: newRow.name,
-                    joined_at: newRow.joined_at,
+                    id: n.id,
+                    client_id: n.client_id,
+                    name: n.name,
+                    joined_at: n.joined_at,
                   },
                 ];
               }
             } else if (eventType === "DELETE") {
-              return prev.filter((p) => p.id !== oldRow.id);
+              return prev.filter((p) => p.id !== o.id);
             } else if (eventType === "UPDATE") {
-              if (oldRow.active === true && newRow.active === false) {
-                return prev.filter((p) => p.id !== newRow.id);
-              }
-              if (oldRow.active === false && newRow.active === true) {
-                if (!prev.some((p) => p.id === newRow.id)) {
-                  return [
-                    ...prev,
-                    {
-                      id: newRow.id,
-                      client_id: newRow.client_id,
-                      name: newRow.name,
-                      joined_at: newRow.joined_at,
-                    },
-                  ];
-                }
+              if (o.active && !n.active)
+                return prev.filter((p) => p.id !== n.id);
+              if (!o.active && n.active && !prev.some((p) => p.id === n.id)) {
+                return [
+                  ...prev,
+                  {
+                    id: n.id,
+                    client_id: n.client_id,
+                    name: n.name,
+                    joined_at: n.joined_at,
+                  },
+                ];
               }
               return prev.map((p) =>
-                p.id === newRow.id
-                  ? { ...p, client_id: newRow.client_id, name: newRow.name }
+                p.id === n.id
+                  ? { ...p, client_id: n.client_id, name: n.name }
                   : p
               );
             }
@@ -346,43 +434,19 @@ export default function Room() {
     };
   }, [roomId]);
 
-  // ---------- 3b) Fallback: alle 8s neu laden ----------
-  useEffect(() => {
-    if (!roomId) return;
-    let stopped = false;
-
-    async function refresh() {
-      const { data } = await supabase
-        .from("participants")
-        .select("id, client_id, name, joined_at")
-        .eq("room_id", roomId)
-        .eq("active", true)
-        .order("joined_at", { ascending: true });
-      if (!stopped && data) setParticipants(data);
-    }
-
-    const t = setInterval(refresh, 8000);
-    return () => {
-      stopped = true;
-      clearInterval(t);
-    };
-  }, [roomId]);
-
-  // ---------- 3c) Presence ----------
+  // ---------- Presence ----------
   useEffect(() => {
     if (!roomId) return;
 
     const clientId = ensureClientId();
-
     const presenceCh = supabase.channel(`presence-room-${roomId}`, {
       config: { presence: { key: clientId } },
     });
 
     presenceCh
       .on("presence", { event: "sync" }, () => {
-        const state = presenceCh.presenceState(); // { clientId: [{...}], ...}
-        const keys = Object.keys(state);
-        setOnlineClientIds(new Set(keys));
+        const state = presenceCh.presenceState();
+        setOnlineClientIds(new Set(Object.keys(state)));
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
@@ -400,7 +464,7 @@ export default function Room() {
     };
   }, [roomId, myPid]);
 
-  // ---------- 3d) Heartbeat ----------
+  // ---------- Heartbeat ----------
   useEffect(() => {
     if (!roomId || !myPid) return;
 
@@ -411,12 +475,10 @@ export default function Room() {
           .update({ last_seen: new Date().toISOString(), active: true })
           .eq("id", myPid)
           .eq("room_id", roomId);
-      } catch {
-        /* best-effort */
-      }
+      } catch {}
     };
 
-    beat(); // sofort
+    beat();
     const t = setInterval(beat, 10000);
     const onVis = () => {
       if (document.visibilityState === "visible") beat();
@@ -429,35 +491,34 @@ export default function Room() {
     };
   }, [roomId, myPid]);
 
-  // ---------- 3e) Game-Channel: Broadcast & rooms-Update hören ----------
+  // ---------- Game-Start Broadcast ----------
   useEffect(() => {
     if (!roomId) return;
-
     const gameCh = supabase
       .channel(`game-room-${roomId}`)
-      .on("broadcast", { event: "game_start" }, () => {
-        setIsPlaying(true);
-      })
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "rooms",
-          filter: `id=eq.${roomId}`,
-        },
-        (payload) => {
-          if (payload?.new?.started_at) setIsPlaying(true);
-        }
-      )
+      .on("broadcast", { event: "game_start" }, () => setIsPlaying(true))
       .subscribe();
-
     return () => {
       supabase.removeChannel(gameCh);
     };
   }, [roomId]);
 
-  // ---------- 4) Verlassen ----------
+  // ---------- Chat: initial laden + subscribe ----------
+  useEffect(() => {
+    if (!roomId) return;
+    let unsub = () => {};
+    (async () => {
+      await loadMessages(roomId);
+      unsub = subscribeMessages(roomId);
+    })();
+    return () => {
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, [roomId, loadMessages, subscribeMessages]);
+
+  // ---------- Soft-Leave ----------
   useEffect(() => {
     const softLeave = async () => {
       const pid = localStorage.getItem("participant_row_id");
@@ -474,14 +535,11 @@ export default function Room() {
             .update({ active: false })
             .match({ room_id: roomId, client_id: clientId });
         }
-      } catch {
-        /* best-effort */
-      }
+      } catch {}
     };
 
     window.addEventListener("beforeunload", softLeave);
     window.addEventListener("pagehide", softLeave);
-
     return () => {
       window.removeEventListener("beforeunload", softLeave);
       window.removeEventListener("pagehide", softLeave);
@@ -490,13 +548,7 @@ export default function Room() {
   }, [roomId]);
 
   // ---------- UI ----------
-  if (loading) {
-    return (
-      <div className="min-h-dvh grid place-content-center p-4">
-        <div className="text-slate-600">Lade Raum …</div>
-      </div>
-    );
-  }
+  if (loading) return <div className="min-h-dvh bg-white" />;
 
   if (!roomId) {
     return (
@@ -523,7 +575,6 @@ export default function Room() {
         <div className="bg-white rounded-2xl shadow p-0 lg:p-6">
           {isPlaying ? (
             <div className="h-full">
-              {/* kleiner Header im Spiel */}
               <div className="hidden lg:flex items-center justify-between p-6 pb-0">
                 <div className="flex items-center gap-3">
                   <div className="grid h-10 w-10 place-content-center rounded-xl bg-slate-900 text-white">
@@ -536,12 +587,7 @@ export default function Room() {
                     </h1>
                   </div>
                 </div>
-                <div className="text-sm text-slate-700">
-                  online: {onlineCount} / {participants.length}
-                </div>
               </div>
-
-              {/* Eingebettetes Quiz */}
               <div className="p-4 lg:p-6">
                 <Quiz
                   roomId={roomId}
@@ -553,7 +599,6 @@ export default function Room() {
             </div>
           ) : (
             <div className="p-6">
-              {/* Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="grid h-10 w-10 place-content-center rounded-xl bg-slate-900 text-white">
@@ -567,7 +612,7 @@ export default function Room() {
                   </div>
                 </div>
                 <div className="text-sm text-slate-700">
-                  Teilnehmer im Raum:{" "}
+                  Teilnehmer:{" "}
                   <span className="font-semibold">{participants.length}</span>
                   <span className="ml-3 text-slate-500">
                     online: {onlineCount}
@@ -575,18 +620,9 @@ export default function Room() {
                 </div>
               </div>
 
-              {/* Hinweis, wenn Partner offline */}
-              {participants.length >= 1 && onlineCount < 2 && (
-                <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
-                  Warten auf zweiten Spieler...
-                </div>
-              )}
-
-              {/* Invite */}
               <div className="mt-5">
                 <p className="text-gray-600">
-                  Teile den Link mit deiner Partnerin/deinem Partner, damit sie
-                  beitreten kann.
+                  Teile den Link mit deiner Partnerin/deinem Partner.
                 </p>
                 <div className="mt-2 flex items-center gap-2">
                   <input
@@ -609,20 +645,8 @@ export default function Room() {
                 {dbError && (
                   <div className="mt-2 text-sm text-red-600">DB: {dbError}</div>
                 )}
-                {participants.length >= 2 && !iAmInRoom && (
-                  <div className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-                    Der Raum ist voll.{" "}
-                    <button
-                      className="underline"
-                      onClick={() => navigate("/", { replace: true })}
-                    >
-                      Zur Lobby
-                    </button>
-                  </div>
-                )}
               </div>
 
-              {/* Teilnehmerliste mit Presence-Status */}
               <div className="mt-5 rounded-xl border border-slate-200 p-4">
                 <div className="text-sm text-slate-500 mb-2">Teilnehmer</div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -660,7 +684,6 @@ export default function Room() {
                 </div>
               </div>
 
-              {/* CTA: Spiel starten */}
               <div className="mt-6 flex items-center gap-3">
                 <button
                   type="button"
@@ -672,13 +695,6 @@ export default function Room() {
                       ? "bg-indigo-600 text-white hover:bg-indigo-500"
                       : "bg-slate-200 text-slate-500 cursor-not-allowed",
                   ].join(" ")}
-                  title={
-                    canStart
-                      ? isPlaying
-                        ? "Spiel läuft…"
-                        : "Spiel starten"
-                      : "Warte bis 2 Spieler online sind (inkl. dir)"
-                  }
                 >
                   {isPlaying ? "Spiel läuft…" : "Spiel starten"}
                 </button>
@@ -690,25 +706,11 @@ export default function Room() {
                     : "Warte auf 2. Teilnehmer…"}
                 </span>
               </div>
-
-              {/* Workflow-Info */}
-              <div className="mt-6 rounded-xl bg-slate-50 p-4 text-sm leading-relaxed text-slate-600">
-                <span className="font-medium">Anleitung:</span> Das Spiel
-                startet synchron für alle, sobald jemand startet. Neue/neu
-                ladende Teilnehmer steigen direkt ins Spiel ein.
-              </div>
-
-              {/* Back link */}
-              <div className="pt-6">
-                <Link to="/" className="text-indigo-600 hover:underline">
-                  ← zurück zur Lobby
-                </Link>
-              </div>
             </div>
           )}
         </div>
 
-        {/* Rechte Karte: Chat (bleibt bestehen) */}
+        {/* Rechte Karte: Chat */}
         <aside className="bg-white rounded-2xl shadow p-6 flex flex-col">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-slate-900">Chat</h2>
@@ -718,39 +720,38 @@ export default function Room() {
             ref={scrollRef}
             className="mt-4 flex-1 overflow-y-auto space-y-2"
           >
-            {messages.length === 0 ? (
-              <p className="text-sm text-slate-500">Noch keine Nachrichten …</p>
-            ) : (
-              messages.map((m) => (
-                <div key={m.id} className="flex flex-col">
-                  <span className="text-xs text-slate-500">{m.sender}</span>
-                  <span className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-800 inline-block w-fit max-w-[75%]">
-                    {m.text}
-                  </span>
-                </div>
-              ))
-            )}
+            {messages.map((m) => (
+              <div key={m.id} className="flex flex-col">
+                <span className="text-xs text-slate-500">{m.sender}</span>
+                <span className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-800 inline-block w-fit max-w-[75%]">
+                  {m.text}
+                </span>
+              </div>
+            ))}
           </div>
 
           <form
             className="mt-3 flex items-center gap-2"
             onSubmit={(e) => {
               e.preventDefault();
-              sendChat();
+              if (canSend) sendChat();
             }}
           >
             <input
               type="text"
               className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Nachricht…"
+              placeholder={
+                iAmInRoom ? "Nachricht…" : "Warte bis du im Raum bist…"
+              }
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
             />
             <button
               type="submit"
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!canSend}
             >
-              Senden
+              {sending ? "…" : "Senden"}
             </button>
           </form>
         </aside>

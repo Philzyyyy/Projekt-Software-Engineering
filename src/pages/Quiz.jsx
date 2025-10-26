@@ -1,4 +1,3 @@
-// src/pages/Quiz.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import { fetchQuestions } from "../api/questions.js";
@@ -161,7 +160,6 @@ export default function Quiz(props) {
 
   // ---- Fragen laden (EINMAL pro Raum) ----
   useEffect(() => {
-    // Reset Marker wenn Raum wechselt
     hasLoadedRef.current = false;
   }, [roomId, code]);
 
@@ -170,7 +168,7 @@ export default function Quiz(props) {
     if (hasLoadedRef.current) {
       setLoading(false);
       return;
-    } // bereits geladen
+    }
 
     let cancelled = false;
     (async () => {
@@ -190,15 +188,13 @@ export default function Quiz(props) {
         if (cancelled) return;
 
         load(qs);
-        hasLoadedRef.current = true; // ⬅️ markiere als geladen
+        hasLoadedRef.current = true;
 
-        // Gepufferten Snapshot anwenden, falls vorhanden
         if (pendingStateRef.current) {
           const snap = pendingStateRef.current;
           pendingStateRef.current = null;
           setTimeout(() => reconcileState(snap), 0);
         }
-        // kein initiales sendState(0, ANSWERING)
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -207,7 +203,6 @@ export default function Quiz(props) {
     return () => {
       cancelled = true;
     };
-    // ⬇️ WICHTIG: nur an roomId/code hängen, NICHT an reconcileState o.ä.
   }, [roomId, code, load]);
 
   // ---- jede lokale Änderung → State senden
@@ -249,7 +244,6 @@ export default function Quiz(props) {
   const picked = answers[index];
   const qText = current.text ?? current.question ?? current.title ?? "";
 
-  // --- Local → Remote
   const handleSelect = (i) => {
     if (phase !== PHASES.ANSWERING) return;
     select(i);
@@ -271,9 +265,8 @@ export default function Quiz(props) {
     next(); // lokal snappy
     if (roomId) {
       const latestPick = answers[index] ?? null;
-      sendNext(toIndex, isLast, latestPick); // Auswahl mitschicken (Score-Sync)
+      sendNext(toIndex, isLast, latestPick);
       if (isLast) sendFinish();
-      // State (toIndex, phase) sendet der State-Effect automatisch
     }
   };
 
