@@ -83,66 +83,98 @@ export default function Lobby() {
   };
 
   return (
-    <div className="min-h-dvh flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6 space-y-6">
-        <h1 className="text-2xl font-semibold">Quiz • Lobby</h1>
+    <div className="min-h-dvh bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-4 sm:p-6 lg:p-10">
+      {/* 2-spaltiges Layout */}
+      <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
+        {/* ===== Linke Spalte: Titel, Haupt-CTA, Join-Form ===== */}
+        <section className="w-full bg-white/90 backdrop-blur rounded-2xl border border-slate-200 shadow-lg shadow-slate-200/40 p-6 sm:p-8">
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+            Quiz • Lobby
+          </h1>
 
-        {/* CTA: Raum erstellen */}
-        <button
-          onClick={onCreate}
-          disabled={busy}
-          className="w-full rounded-xl py-3 px-4 bg-indigo-600 text-white font-medium hover:bg-indigo-700 active:opacity-90 disabled:opacity-50"
-        >
-          {busy ? "Erstelle…" : "Raum erstellen"}
-        </button>
-
-        {/* Formular: Mit Code beitreten */}
-        <form onSubmit={onSubmit} className="space-y-2">
-          <label className="block text-sm font-medium">
-            Mit Code beitreten
-          </label>
-          <div className="flex gap-2">
-            <input
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase().trim())}
-              placeholder="z. B. ABC12"
-              maxLength={5}
-              className="flex-1 rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              aria-invalid={!!error}
-              aria-describedby={error ? "code-error" : undefined}
-            />
-            <button
-              type="submit"
-              disabled={!validCode(code) || busy}
-              className="rounded-xl px-4 py-2 bg-gray-900 text-white hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Beitreten
-            </button>
-          </div>
-          <p
-            id="code-error"
-            className="text-sm text-red-600 min-h-5"
-            aria-live="polite"
+          {/* HIER ist jetzt der große Button – also linke Spalte */}
+          <button
+            onClick={onCreate}
+            disabled={busy}
+            className="mt-6 inline-flex items-center justify-center gap-2 w-full rounded-xl py-3.5 px-4 
+             bg-violet-600 text-white font-medium shadow-sm hover:bg-violet-700 
+             active:opacity-90 disabled:opacity-50 transition-colors 
+             focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
           >
-            {error || " "}
+            {busy ? "Erstelle…" : "Raum erstellen"}
+          </button>
+
+          {/* Join-Formular */}
+          <form onSubmit={onSubmit} className="mt-6 space-y-2">
+            <label className="block text-sm font-medium text-slate-700">
+              Mit Code beitreten
+            </label>
+            <div className="flex gap-2">
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase().trim())}
+                placeholder="z. B. ABC12"
+                maxLength={5}
+                className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                aria-invalid={!!error}
+                aria-describedby={error ? "code-error" : undefined}
+              />
+              <button
+                type="submit"
+                disabled={!validCode(code) || busy}
+                className="rounded-xl px-4 py-2.5 bg-slate-900 text-white hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
+              >
+                Beitreten
+              </button>
+            </div>
+            <p
+              id="code-error"
+              className="text-sm text-red-600 min-h-5"
+              aria-live="polite"
+            >
+              {error || " "}
+            </p>
+          </form>
+        </section>
+
+        {/* ===== Rechte Spalte: Bereich „Fragen erstellen” ===== */}
+        <aside className="w-full bg-white rounded-2xl border border-slate-200 shadow-lg shadow-slate-200/40 p-6 sm:p-8 relative overflow-hidden">
+          {/* dezenter Glow */}
+          <div className="pointer-events-none absolute -top-20 -right-20 h-72 w-72 rounded-full bg-violet-200/40 blur-3xl" />
+          <h2 className="text-xl font-semibold tracking-tight">
+            Fragen zum Pool hinzufügen
+          </h2>
+          <p className="mt-2 text-slate-600 leading-relaxed">
+            Lege eigene Fragen an und erweitere den Fragensatz
           </p>
-        </form>
 
-        {/* Trenner */}
-        <div className="h-px bg-slate-200 my-2" />
-
-        {/* NEU: Link zum Fragen-Formular */}
-        <div className="flex items-center justify-between">
-          <div className="text-sm text-slate-600">
-            Oder erstelle neue Fragen für den Pool:
-          </div>
           <Link
             to="/add-question"
-            className="inline-flex items-center rounded-xl px-3 py-2 border border-slate-300 text-slate-700 hover:bg-slate-50"
+            className="mt-6 inline-flex items-center justify-center gap-2 w-full rounded-xl py-3.5 px-4 
+             bg-violet-600 text-white font-medium shadow-sm hover:bg-violet-700 
+             active:opacity-90 disabled:opacity-50 transition-colors 
+             focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
           >
-            ➕ Fragen hinzufügen
+            Fragen hinzufügen
           </Link>
-        </div>
+
+          <div className="mt-8 h-px bg-slate-200" />
+
+          <ul className="mt-6 space-y-3 text-sm text-slate-700">
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5">➕</span>
+              Single-Choice
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5">➕</span>
+              Teile Fragen mit der Community
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5">➕</span>
+              Kategorien & Schwierigkeitsgrad setzen
+            </li>
+          </ul>
+        </aside>
       </div>
     </div>
   );
