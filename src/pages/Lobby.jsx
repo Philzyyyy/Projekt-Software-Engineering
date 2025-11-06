@@ -19,7 +19,7 @@ export default function Lobby() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
 
-  // Raum erstellen -> INSERT in rooms, bei Kollision neuen Code probieren
+  // Raum erstellen
   const onCreate = async () => {
     if (busy) return;
     setBusy(true);
@@ -49,7 +49,7 @@ export default function Lobby() {
     );
   };
 
-  // Beitreten -> SELECT rooms by code
+  // Beitreten
   const onJoin = async () => {
     if (!validCode(code)) {
       setError("Bitte 5-stelligen Code (A–Z, 0–9) eingeben.");
@@ -83,16 +83,15 @@ export default function Lobby() {
   };
 
   return (
-    <div className="min-h-dvh bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-4 sm:p-6 lg:p-10">
+    <div className="min-h-dvh flex flex-col items-center justify-between bg-white p-4 sm:p-6 lg:p-10">
       {/* 2-spaltiges Layout */}
       <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
-        {/* ===== Linke Spalte: Titel, Haupt-CTA, Join-Form ===== */}
-        <section className="w-full bg-white/90 backdrop-blur rounded-2xl border border-slate-200 shadow-lg shadow-slate-200/40 p-6 sm:p-8">
+        {/* ===== Linke Spalte ===== */}
+        <section className="w-full bg-white rounded-2xl border border-slate-200 shadow-lg p-6 sm:p-8">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
             Quiz • Lobby
           </h1>
 
-          {/* HIER ist jetzt der große Button – also linke Spalte */}
           <button
             onClick={onCreate}
             disabled={busy}
@@ -104,7 +103,6 @@ export default function Lobby() {
             {busy ? "Erstelle…" : "Raum erstellen"}
           </button>
 
-          {/* Join-Formular */}
           <form onSubmit={onSubmit} className="mt-6 space-y-2">
             <label className="block text-sm font-medium text-slate-700">
               Mit Code beitreten
@@ -122,7 +120,7 @@ export default function Lobby() {
               <button
                 type="submit"
                 disabled={!validCode(code) || busy}
-                className="rounded-xl px-4 py-2.5 bg-slate-900 text-white hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
+                className="rounded-xl px-4 py-2.5 bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
               >
                 Beitreten
               </button>
@@ -137,9 +135,8 @@ export default function Lobby() {
           </form>
         </section>
 
-        {/* ===== Rechte Spalte: Bereich „Fragen erstellen” ===== */}
-        <aside className="w-full bg-white rounded-2xl border border-slate-200 shadow-lg shadow-slate-200/40 p-6 sm:p-8 relative overflow-hidden">
-          {/* dezenter Glow */}
+        {/* ===== Rechte Spalte ===== */}
+        <aside className="w-full bg-white rounded-2xl border border-slate-200 shadow-lg p-6 sm:p-8 relative overflow-hidden">
           <div className="pointer-events-none absolute -top-20 -right-20 h-72 w-72 rounded-full bg-violet-200/40 blur-3xl" />
           <h2 className="text-xl font-semibold tracking-tight">
             Fragen zum Pool hinzufügen
@@ -152,7 +149,7 @@ export default function Lobby() {
             to="/add-question"
             className="mt-6 inline-flex items-center justify-center gap-2 w-full rounded-xl py-3.5 px-4 
              bg-violet-600 text-white font-medium shadow-sm hover:bg-violet-700 
-             active:opacity-90 disabled:opacity-50 transition-colors 
+             active:opacity-90 transition-colors 
              focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
           >
             Fragen hinzufügen
@@ -176,6 +173,24 @@ export default function Lobby() {
           </ul>
         </aside>
       </div>
+
+      {/* ===== Fußnote ===== */}
+      <footer className="w-full max-w-5xl mt-8 mb-4">
+        <div className="flex flex-col items-center gap-2 text-xs sm:text-sm text-slate-600">
+          <nav className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+            <Link to="#" className="text-violet-600 hover:underline">
+              Benutzerhandbuch
+            </Link>
+            <span className="text-slate-400">·</span>
+            <Link to="#" className="text-violet-600 hover:underline">
+              Impressum
+            </Link>
+          </nav>
+          <p className="text-center">
+            Copyright © 2025 Quizmaster AG. All Rights Reserved.
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
