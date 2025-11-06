@@ -595,16 +595,18 @@ export default function Room() {
             <div className="h-full">
               <div className="hidden lg:flex items-center justify-between p-6 pb-0">
                 <div className="flex items-center gap-3">
-                  <div className="grid h-10 w-10 place-content-center rounded-xl bg-slate-900 text-white">
-                    🎮
-                  </div>
-                  <div>
-                    <div className="text-sm text-slate-500">Spiel</div>
-                    <h1 className="text-xl font-semibold tracking-tight text-slate-900">
-                      {code}
-                    </h1>
+                  <div className="flex items-center gap-2 rounded-xl border border-violet-400 px-4 py-2">
+                    <span className="font-semibold text-slate-900">Raum</span>
+                    <span className="font-mono text-violet-700">{code}</span>
                   </div>
                 </div>
+                {/* Zurück zur Lobby */}
+                <Link
+                  to="/"
+                  className="inline-flex items-center rounded-xl px-3 py-2 border border-violet-200 text-violet-600 hover:bg-violet-50 hover:text-violet-700 transition-colors"
+                >
+                  ← Zurück zur Lobby
+                </Link>
               </div>
               <div className="p-4 lg:p-6">
                 <Quiz
@@ -619,23 +621,18 @@ export default function Room() {
             <div className="p-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="grid h-10 w-10 place-content-center rounded-xl bg-slate-900 text-white">
-                    🏛️
-                  </div>
-                  <div>
-                    <div className="text-sm text-slate-500">Raum</div>
-                    <h1 className="text-xl font-semibold tracking-tight text-slate-900">
-                      {code}
-                    </h1>
+                  <div className="flex items-center gap-2 rounded-xl border border-violet-400 px-4 py-2">
+                    <span className="font-semibold text-slate-900">Raum</span>
+                    <span className="font-mono text-violet-700">{code}</span>
                   </div>
                 </div>
-                <div className="text-sm text-slate-700">
-                  Teilnehmer:{" "}
-                  <span className="font-semibold">{participants.length}</span>
-                  <span className="ml-3 text-slate-500">
-                    online: {onlineCount}
-                  </span>
-                </div>
+                {/* Zurück zur Lobby */}
+                <Link
+                  to="/"
+                  className="inline-flex items-center rounded-xl px-3 py-2 border border-slate-300 text-slate-700 hover:bg-slate-50"
+                >
+                  ← Zurück zur Lobby
+                </Link>
               </div>
 
               <div className="mt-5">
@@ -650,7 +647,7 @@ export default function Room() {
                   />
                   <button
                     onClick={copyInvite}
-                    className="rounded-xl px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700"
+                    className="rounded-xl px-4 py-2 bg-violet-600 text-white hover:bg-violet-700"
                   >
                     Kopieren
                   </button>
@@ -710,7 +707,7 @@ export default function Room() {
                   className={[
                     "rounded-xl px-5 py-3 text-sm font-semibold transition",
                     canStart && !isPlaying
-                      ? "bg-indigo-600 text-white hover:bg-indigo-500"
+                      ? "bg-violet-600 text-white hover:bg-violet-500"
                       : "bg-slate-200 text-slate-500 cursor-not-allowed",
                   ].join(" ")}
                 >
