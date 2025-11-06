@@ -292,19 +292,39 @@ export default function Quiz(props) {
           const isWrongPick =
             phase === PHASES.REVEALED && isPicked && i !== current.correctIndex;
 
+          const letter = (i) => String.fromCharCode(65 + i); // 0 -> A, 1 -> B, ...
+
           return (
             <li key={i}>
               <button
-                className={
-                  "w-full text-left p-3 rounded border " +
-                  (isPicked ? "border-blue-500 " : "border-gray-300 ") +
-                  (isCorrect ? "bg-green-100 " : "") +
-                  (isWrongPick ? "bg-red-100 " : "")
-                }
+                className={`w-full flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition
+    ${
+      isPicked ? "border-violet-500 ring-1 ring-violet-200" : "border-slate-300"
+    }
+    ${isCorrect ? "bg-green-50" : ""}
+    ${isWrongPick ? "bg-red-50" : ""}`}
                 onClick={() => handleSelect(i)}
                 disabled={phase !== PHASES.ANSWERING}
+                aria-label={`${letter(i)}: ${opt}`}
               >
-                {opt}
+                {/* Label-Badge A/B/C/D */}
+                <span
+                  className={`mt-0.5 grid h-6 w-6 place-items-center rounded-full border text-xs font-bold
+      ${
+        isCorrect
+          ? "bg-green-600 text-white border-green-600"
+          : isWrongPick
+          ? "bg-red-600 text-white border-red-600"
+          : isPicked
+          ? "bg-violet-600 text-white border-violet-600"
+          : "text-slate-700 border-slate-300"
+      }`}
+                >
+                  {letter(i)}
+                </span>
+
+                {/* Antworttext */}
+                <span className="flex-1">{opt}</span>
               </button>
             </li>
           );
@@ -313,7 +333,7 @@ export default function Quiz(props) {
 
       {phase === PHASES.ANSWERING && (
         <button
-          className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-40"
+          className="px-4 py-2 rounded bg-violet-600 text-white disabled:opacity-40"
           onClick={handleReveal}
           disabled={picked == null}
         >
@@ -334,7 +354,7 @@ export default function Quiz(props) {
             )}
           </div>
           <button
-            className="px-4 py-2 rounded bg-blue-600 text-white"
+            className="px-4 py-2 rounded bg-violet-600 text-white"
             onClick={handleNext}
           >
             Nächste Frage

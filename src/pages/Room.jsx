@@ -577,7 +577,7 @@ export default function Room() {
             Der Code <span className="font-mono">{code}</span> ist unbekannt.
           </p>
           <div className="mt-4">
-            <Link to="/" className="text-indigo-600 hover:underline">
+            <Link to="/" className="text-violet-600 hover:underline">
               ← zurück zur Lobby
             </Link>
           </div>
@@ -629,7 +629,7 @@ export default function Room() {
                 {/* Zurück zur Lobby */}
                 <Link
                   to="/"
-                  className="inline-flex items-center rounded-xl px-3 py-2 border border-slate-300 text-slate-700 hover:bg-slate-50"
+                  className="inline-flex items-center rounded-xl px-3 py-2 border border-slate-300 text-violet-600 hover:bg-slate-50"
                 >
                   ← Zurück zur Lobby
                 </Link>
@@ -763,7 +763,7 @@ export default function Room() {
                       className={[
                         "px-3 py-2 text-sm shadow-sm",
                         mine
-                          ? "bg-indigo-600 text-white rounded-2xl rounded-tr-sm"
+                          ? "bg-violet-600 text-white rounded-2xl rounded-tr-sm"
                           : "bg-slate-100 text-slate-800 rounded-2xl rounded-tl-sm",
                       ].join(" ")}
                     >
@@ -803,7 +803,7 @@ export default function Room() {
             />
             <button
               type="submit"
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-800 disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!canSend}
             >
               {sending ? "…" : "Senden"}
